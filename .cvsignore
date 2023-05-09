@@ -1,0 +1,9 @@
+obj
+*.exe
+*.settings
+*.sh
+*.vc
+*.pl
+*.txt
+tst
+*.bash_history

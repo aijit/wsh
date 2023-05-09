@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?eclipse-cdt version="2.0"?>
+
+<cdtproject id="org.eclipse.cdt.make.core.make">
+<extension id="org.eclipse.cdt.core.PE" point="org.eclipse.cdt.core.BinaryParser"/>
+<extension id="org.eclipse.cdt.core.domsourceindexer" point="org.eclipse.cdt.core.CIndexer"/>
+<data>
+<item id="org.eclipse.cdt.core.pathentry">
+<pathentry kind="con" path="org.eclipse.cdt.make.core.DISCOVERED_SCANNER_INFO"/>
+<pathentry kind="src" path=""/>
+<pathentry kind="out" path=""/>
+<pathentry kind="out" path="v01/bash-1.14.2/Bash"/>
+<pathentry include="C:/Program Files/Microsoft Visual Studio/VC98/Include" kind="inc" path=""/>
+<pathentry include="D:/home/joerg/development/DevPool/include/w32-ix86" kind="inc" path=""/>
+<pathentry base-path="cala_rex" include="src/include" kind="inc" path=""/>
+<pathentry base-path="cala_rex" include="other/cala/src/include" kind="inc" path=""/>
+</item>
+<item id="cdt_indexer">
+<indexEnabled indexValue="false"/>
+<indexerProblemsEnabled indexProblemsValue="0"/>
+</item>
+<item id="org.eclipse.cdt.make.core.buildtargets">
+<buildTargets>
+<target name="all" path="" targetID="org.eclipse.cdt.make.MakeTargetBuilder">
+<buildCommand>d:/gnu/usr/bin/eclipse_make_wrapper.cmd</buildCommand>
+<buildArguments>gmake system=w32-ix86 -f bld/Makefile</buildArguments>
+<buildTarget>all</buildTarget>
+<stopOnError>false</stopOnError>
+<useDefaultCommand>false</useDefaultCommand>
+</target>
+<target name="clean" path="" targetID="org.eclipse.cdt.make.MakeTargetBuilder">
+<buildCommand>d:/gnu/usr/bin/eclipse_make_wrapper.cmd</buildCommand>
+<buildArguments>gmake system=w32-ix86 -f bld/Makefile</buildArguments>
+<buildTarget>clean</buildTarget>
+<stopOnError>false</stopOnError>
+<useDefaultCommand>false</useDefaultCommand>
+</target>
+<target name="clean_and_all" path="" targetID="org.eclipse.cdt.make.MakeTargetBuilder">
+<buildCommand>d:/gnu/usr/bin/eclipse_make_wrapper.cmd</buildCommand>
+<buildArguments>gmake system=w32-ix86 -f bld/Makefile</buildArguments>
+<buildTarget>clean all</buildTarget>
+<stopOnError>false</stopOnError>
+<useDefaultCommand>false</useDefaultCommand>
+</target>
+<target name="toolslib" path="" targetID="org.eclipse.cdt.make.MakeTargetBuilder">
+<buildCommand>d:/gnu/usr/bin/eclipse_make_wrapper.cmd</buildCommand>
+<buildArguments>gmake system=w32-ix86 -f bld/Makefile</buildArguments>
+<buildTarget>others</buildTarget>
+<stopOnError>false</stopOnError>
+<useDefaultCommand>false</useDefaultCommand>
+</target>
+<target name="beautify" path="" targetID="org.eclipse.cdt.make.MakeTargetBuilder">
+<buildCommand>d:/gnu/usr/bin/eclipse_make_wrapper.cmd</buildCommand>
+<buildArguments>gmake system=w32-ix86 -f bld/Makefile</buildArguments>
+<buildTarget>beautify clean_beautify</buildTarget>
+<stopOnError>false</stopOnError>
+<useDefaultCommand>false</useDefaultCommand>
+</target>
+<target name="others" path="" targetID="org.eclipse.cdt.make.MakeTargetBuilder">
+<buildCommand>d:/gnu/usr/bin/eclipse_make_wrapper.cmd</buildCommand>
+<buildArguments>gmake system=w32-ix86 -f bld/Makefile</buildArguments>
+<buildTarget>others</buildTarget>
+<stopOnError>false</stopOnError>
+<useDefaultCommand>false</useDefaultCommand>
+</target>
+<target name="lint" path="" targetID="org.eclipse.cdt.make.MakeTargetBuilder">
+<buildCommand>d:/gnu/usr/bin/eclipse_make_wrapper.cmd</buildCommand>
+<buildArguments>gmake system=w32-ix86 -f bld/Makefile</buildArguments>
+<buildTarget>lint</buildTarget>
+<stopOnError>false</stopOnError>
+<useDefaultCommand>false</useDefaultCommand>
+</target>
+</buildTargets>
+</item>
+<item id="cdt_resolver">
+<custom value="false"/>
+</item>
+</data>
+</cdtproject>
