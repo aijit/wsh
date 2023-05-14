@@ -5,7 +5,7 @@ DUMMY_INC=v01/dum_inc
 OBJ_DIR=obj
 OBJ_DIR_BUILTINS=obj/builtins
 
-CC=cmd /C gcc -Wno-error -g
+CC=mkdir -p $(OBJ_DIR_BUILTINS) && gcc -Wno-error -g
 
 CFLAGS= -I$(BASH_SRC_MAIN_DIR) \
 	 -I$(BASH_SRC_MAIN_DIR)/lib \
@@ -53,7 +53,6 @@ BASH_OBJS=$(OBJ_DIR)/execute_cmd.obj \
 	$(OBJ_DIR)/fnmatch.obj \
 	$(OBJ_DIR)/glob.obj \
 	$(OBJ_DIR)/y_tab.obj \
-	$(OBJ_DIR)/history.obj \
 	$(OBJ_DIR)/vi_mode.obj \
 	$(OBJ_DIR)/keymaps.obj \
 	$(OBJ_DIR)/tilde.obj \
@@ -66,7 +65,6 @@ BASH_OBJS=$(OBJ_DIR)/execute_cmd.obj \
 	$(OBJ_DIR)/display.obj \
 	$(OBJ_DIR)/readline.obj \
 	$(OBJ_DIR)/test.obj \
-	$(OBJ_DIR)/bind.obj \
 	$(OBJ_DIR)/trap.obj \
 	$(OBJ_DIR)/rltty.obj \
 	$(OBJ_DIR)/dirent.obj \
@@ -145,12 +143,6 @@ $(OBJ_DIR)/%.obj: $(BASH_SRC_MAIN_DIR)/lib/termcap/%.c
 	$(CC) $(CFLAGS) $< -o $@
 
 $(OBJ_DIR)/%.obj: $(BASH_SRC_MAIN_DIR)/lib/tilde/%.c  
-	$(CC) $(CFLAGS) $< -o $@
-
-$(OBJ_DIR)/%.obj: $(BASH_SRC_MAIN_DIR)/builtins/%.c 
-	$(CC) $(CFLAGS) $< -o $@
-
-$(OBJ_DIR_BUILTINS)/%.obj: $(BASH_SRC_MAIN_DIR)/%.c 
 	$(CC) $(CFLAGS) $< -o $@
 
 $(OBJ_DIR_BUILTINS)/%.obj: $(BASH_SRC_MAIN_DIR)/lib/%.c 

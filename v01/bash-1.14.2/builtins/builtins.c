@@ -46,8 +46,10 @@ struct builtin shell_builtins[] = {
      "unalias [-a] [name ...]" },
 #endif /* ALIAS */
 #if defined (READLINE)
+/* FIXME: obj/builtins/builtins.obj:builtins.c:(.data+0x58): undefined reference to `bind_builtin'
   { "bind", bind_builtin, BUILTIN_ENABLED | STATIC_BUILTIN, bind_doc,
      "bind [-lvd] [-m keymap] [-f filename] [-q name] [keyseq:readline-function]" },
+*/
 #endif /* READLINE */
   { "break", break_builtin, BUILTIN_ENABLED | STATIC_BUILTIN | SPECIAL_BUILTIN, break_doc,
      "break [n]" },
@@ -120,8 +122,10 @@ struct builtin shell_builtins[] = {
   { "help", help_builtin, BUILTIN_ENABLED | STATIC_BUILTIN, help_doc,
      "help [pattern ...]" },
 #if defined (HISTORY)
+/* FIXME: obj/builtins/builtins.obj:builtins.c:(.data+0x418): undefined reference to `history_builtin'
   { "history", history_builtin, BUILTIN_ENABLED | STATIC_BUILTIN, history_doc,
      "history [n] [ [-awrn] [filename]]" },
+*/
 #endif /* HISTORY */
 #if defined (JOB_CONTROL)
   { "jobs", jobs_builtin, BUILTIN_ENABLED | STATIC_BUILTIN, jobs_doc,
