@@ -33,7 +33,7 @@ Foundation, 675 Mass Ave, Cambridge, MA 02139, USA. */
  * seems that pre-4.3-tahoe implementations of _doprnt () return the first
  * argument, i.e. a char *.
  */
-#include <varargs.h>
+#include <stdarg.h>
 
 int
 vfprintf (iop, fmt, ap)

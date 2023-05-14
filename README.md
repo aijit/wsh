@@ -17,4 +17,7 @@ developed by [Jutta Albrecht](https://sourceforge.net/u/bithexe/profile/)
 | [Joerg Matysiak](https://sourceforge.net/u/matysiak/profile/)
 | [Mathias Faas](https://sourceforge.net/u/mfaascenit/profile/).
 
+### 编译依赖
+
+GCC 从 2.95.3 开始 no longer implements <varargs.h>
 

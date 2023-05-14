@@ -20,7 +20,7 @@
 #include <sys/types.h>
 #include "../posixstat.h"
 #if defined (HAVE_VFPRINTF)
-#include <varargs.h>
+#include <stdarg.h>
 #endif /* VFPRINTF */
 
 #if defined (HAVE_STRING_H)

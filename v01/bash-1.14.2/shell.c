@@ -45,7 +45,7 @@
 #include <assert.h>
 
 #if defined (HAVE_VARARGS_H)
-#include <varargs.h>
+#include <stdarg.h>
 #endif
 
 #include "shell.h"

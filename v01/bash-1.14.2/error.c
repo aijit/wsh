@@ -21,7 +21,7 @@
 #include <fcntl.h>
 
 #if defined (HAVE_VFPRINTF)
-#include <varargs.h>
+#include <stdarg.h>
 #endif
 
 #include <errno.h>

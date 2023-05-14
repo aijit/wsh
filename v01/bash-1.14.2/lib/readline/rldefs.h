@@ -162,7 +162,7 @@ extern char *strchr (), *strrchr ();
 #endif /* !strchr && !__STDC__ */
 
 #if defined (HAVE_VARARGS_H)
-#  include <varargs.h>
+#  include <stdarg.h>
 #endif /* HAVE_VARARGS_H */
 
 /* This is needed to include support for TIOCGWINSZ and window resizing. */

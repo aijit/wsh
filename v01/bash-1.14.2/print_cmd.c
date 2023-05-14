@@ -20,7 +20,7 @@ Foundation, 675 Mass Ave, Cambridge, MA 02139, USA. */
 #include <stdio.h>
 
 #if defined (HAVE_VARARGS_H)
-#  include <varargs.h>
+#  include <stdarg.h>
 #endif
 
 #if defined (HAVE_STRING_H)
