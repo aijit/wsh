@@ -19,5 +19,15 @@ developed by [Jutta Albrecht](https://sourceforge.net/u/bithexe/profile/)
 
 ### 编译依赖
 
-GCC 从 2.95.3 开始 no longer implements <varargs.h>
+* 依赖工具
+
+    [w64devkit v1.19.0](https://github.com/skeeto/w64devkit/releases/tag/v1.19.0)
+    
+    GCC 从 2.95.3 开始 no longer implements <varargs.h>
+
+* 编译命令
+
+    `$ make clean`
+
+    `$ make bash`
 
