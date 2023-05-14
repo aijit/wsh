@@ -10,7 +10,7 @@ It is a developing interactive shell,
 as well as a interpreter for bash scripts.
 
 This project is initially based on the
-__[win-bash](https://sourceforge.net/projects/win-bash/)__
+__[win-bash_0.8.5](https://sourceforge.net/projects/win-bash/)__
 ( last updated on 2011-03-17 )
 developed by [Jutta Albrecht](https://sourceforge.net/u/bithexe/profile/)
 | [Christian V. J. Bruessow](https://sourceforge.net/u/cvjb/profile/)
