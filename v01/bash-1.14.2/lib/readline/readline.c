@@ -3306,6 +3306,8 @@ rl_emacs_editing_mode (count, key)
 /*								    */
 /* **************************************************************** */
 
+#undef EWOULDBLOCK
+
 int
 rl_getc (stream)
      FILE *stream;

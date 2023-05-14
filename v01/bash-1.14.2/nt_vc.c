@@ -1415,6 +1415,7 @@ int nt_open3(const char * path, int oflag, int pmode,const char *f, int l)
    return (fd);
 }
 
+#undef __NT_EGC__
 #ifdef __NT_EGC__
 FILE * _fsopen(char *, const char *, int);
 #endif

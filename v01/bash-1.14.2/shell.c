@@ -1839,6 +1839,8 @@ show_shell_version ()
 #include <sys/socket.h>
 #endif
 
+#undef HAVE_SOCKETS
+
 /* Is FD a socket or network connection? */
 static int
 isnetconn (fd)
