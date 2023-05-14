@@ -1,6 +1,5 @@
-
-BASH_SRC_MAIN_DIR=v01/bash-1.14.2
-DUMMY_INC=v01/dum_inc
+BASH_SRC_MAIN_DIR=bash_src
+DUMMY_INC=dum_inc
 
 OBJ_DIR=obj
 OBJ_DIR_BUILTINS=obj/builtins
