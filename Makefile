@@ -22,6 +22,7 @@ CFLAGS= -I$(BASH_SRC_MAIN_DIR) \
 	 -DHAVE_STRCHR -DSHELL -DHAVE_ALLOCA \
 	 -DHAVE_STRCASECMP\
 	 -DHAVE_ALLOCA_H -D__NT_VC__  -D__NT_EGC__\
+	 -DBUILDVERSION=$(shell date +%s) \
 	 -c 
 
 BASH_OBJS=$(OBJ_DIR)/execute_cmd.obj \
