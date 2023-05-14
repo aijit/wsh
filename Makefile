@@ -2397,8 +2397,7 @@ bash: $(BASH_OBJS) $(BUILTIN_OBJS)
 	$(CC) $(BUILTIN_OBJS) $(BASH_OBJS)  -o bash.exe
 
 clean:
-	- cmd /C del /F $(subst /,\, $(BASH_OBJS))\*
-	- cmd /C del /F $(subst /,\, $(BUILTIN_OBJS))\*
+	- cmd /C if exist $(OBJ_DIR) rd /S /Q $(OBJ_DIR)
 
 test: bash
 	- cmd /C del shelltools\sh.exe shelltools\bash.exe
