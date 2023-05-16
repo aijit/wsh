@@ -28,7 +28,7 @@ developed by [Jutta Albrecht](https://sourceforge.net/u/bithexe/profile/)
 
 * 编译命令
 
-    `$ make clean`
+    `$ cmake -G Ninja -S . -B $BUILD_DIR`
 
-    `$ make bash`
+    `$ cmake --build $BUILD_DIR --target bash`
 
