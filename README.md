@@ -22,6 +22,7 @@ developed by [Jutta Albrecht](https://sourceforge.net/u/bithexe/profile/)
 * 依赖工具
 
     [w64devkit v1.19.0](https://github.com/skeeto/w64devkit/releases/tag/v1.19.0)
+    | [CMake v3.25.0](https://github.com/Kitware/CMake/releases/tag/v3.25.0)
     
     GCC 从 2.95.3 开始 no longer implements <varargs.h>
 
