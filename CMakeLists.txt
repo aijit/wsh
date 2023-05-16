@@ -84,6 +84,4 @@ ADD_CUSTOM_TARGET(test
         COMMAND cmd /c cp ${CMAKE_BINARY_DIR}/${WSH}.exe shelltools/sh.exe
         COMMAND cd shelltools && cmd /c start_bash.bat "cd ../testcases; . ./runtests.sh" && cd ..
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-        COMMENT "test bash"
-        SOURCES ${CMAKE_BINARY_DIR}/bash.exe
         )
