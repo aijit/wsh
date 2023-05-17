@@ -5,17 +5,36 @@
 # Chet Ramey
 # chet@ins.CWRU.Edu
 #
+
+#
+#  Copyright 2002 Chester Ramey
+#
+#   This program is free software; you can redistribute it and/or modify
+#   it under the terms of the GNU General Public License as published by
+#   the Free Software Foundation; either version 2, or (at your option)
+#   any later version.
+#
+#   TThis program is distributed in the hope that it will be useful,
+#   but WITHOUT ANY WARRANTY; without even the implied warranty of
+#   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#   GNU General Public License for more details.
+#
+#   You should have received a copy of the GNU General Public License
+#   along with this program; if not, write to the Free Software Foundation,
+#   Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
+
 #
 # These are definitions for the ksh compiled-in `exported aliases'.  There
 # are others, but we already have substitutes for them: "history", "type",
 # and "hash".
 #
-alias r="fc -e -"
+alias r="fc -s"
 alias functions="typeset -f"
 alias integer="typeset -i"
 alias nohup="nohup "
-alias true=":"
-alias false="let 0"
+alias command="command "
+alias stop="kill -s STOP"
+alias redirect="command exec"
 alias hist="fc"
 
 #
@@ -29,49 +48,69 @@ alias hist="fc"
 
 whence()
 {
-	local vflag
+	local vflag pflag fflag defarg c
 	local path
 
-	vflag=
+	vflag= aflag= pflag= fflag=
 	path=
 	if [ "$#" = "0" ] ; then
-		echo "whence: argument expected"
-		return 1
+		echo "whence: usage: whence [-afpv] name..." >&2
+		return 2
 	fi
-	case "$1" in
-		-v) vflag=1
-		    shift 1
-		    ;;
-		-*) echo "whence: bad option: $1"
-		    return 1
-		    ;;
-		 *) ;;
-	esac
+
+	OPTIND=1
+	while getopts "avfp" c
+	do
+		case "$c" in
+		a) defarg=-a ;;
+		f) fflag=1 ;;	# no-op
+		p) pflag=1 ;;
+		v) vflag=1 ;;
+		?) echo "whence: $1: unknown option" >&2
+		   echo "whence: usage: whence [-afpv] name..." >&2
+		   return 2 ;;
+		esac
+	done
+
+	shift $(( $OPTIND - 1 ))
 
 	if [ "$#" = "0" ] ; then
-		echo "whence: bad argument count"
-		return 1
+		echo "whence: usage: whence [-afpv] name..." >&2
+		return 2
 	fi
 
 	for cmd
 	do
 		if [ "$vflag" ]	 ; then
-			echo $(builtin type $cmd | sed 1q)
+			if [ -z "$defarg" ]; then
+				builtin type $cmd | sed 1q
+			else
+				if builtin type $defarg -t $cmd | grep 'function$' >/dev/null 2>&1; then
+					# HAIRY awk script to suppress
+					# printing of function body -- could
+					# do it with sed, but I don't have
+					# that kind of time
+					builtin type $defarg $cmd | awk '
+BEGIN {printit = 1;}
+$1 == "'$cmd'" && $2 == "()" {printit=0; next; }
+/^}$/ { if (printit == 0) printit=1 ; else print $0; next ; }
+/.*/ { if (printit) print $0; }'
+				else
+					builtin type $defarg $cmd
+				fi
+			fi
 		else
-			path=$(builtin type -path $cmd)
+			path=$(builtin type $defarg -p $cmd)
 			if [ "$path" ] ; then
 				echo $path
 			else
 				case "$cmd" in
-					/*) echo ""
-					    ;;
-					 *) case "$(builtin type -type $cmd)" in
-						"") echo ""
-						    ;;
-						 *) echo "$cmd"
-						    ;;
-					    esac
-					    ;;
+				/*) echo "" ;;
+				 *) case "$(builtin type -t $cmd)" in
+				    "") echo "" ;;
+				    *) echo "$cmd" ;;
+				    esac
+				    ;;
 				esac
 			fi
 		fi
@@ -88,63 +127,87 @@ whence()
 #	whence -v "$*"
 #}
 
+#
+# ksh-like `cd': cd [-LP] [dir [change]]
+#
 cd()
 {
-	case $# in
-	0)	builtin cd "$HOME" ;;
-	1) 	builtin cd "$@" ;;
-	2)	old="$1"
-		new="$2"
-		dir=$(echo "$PWD" | sed "s:$old:$new:g")
-		case "$dir" in
-		"$PWD")	echo "bash: cd: bad substitution" >&2 ; return 1 ;;
-		*)	echo "$dir"
-			builtin cd "$dir"
-			;;
+	OPTIND=1
+	while getopts "LP" opt
+	do
+		case $opt in
+		L|P)	CDOPTS="$CDOPTS -$opt" ;;
+		*)	echo "$FUNCNAME: usage: $FUNCNAME [-LP] [dir] [change]" >&2
+			return 2;;
 		esac
+	done
+
+	shift $(( $OPTIND - 1 ))
+
+	case $# in
+	0)	builtin cd $CDOPTS "$HOME" ;;
+	1) 	builtin cd $CDOPTS "$@" ;;
+	2)	old="$1" new="$2"
+		case "$PWD" in
+		*$old*)	;;
+		*)	 echo "${0##*/}: $FUNCNAME: bad substitution" >&2 ; return 1 ;;
+		esac
+
+		dir=${PWD//$old/$new}
+
+		builtin cd $CDOPTS "$dir" && echo "$PWD"
+
 		;;
-	*)	echo "cd: wrong arg count" >&2 ; return 1 ;;
+	*)	echo "${0##*/}: $FUNCNAME: usage: $FUNCNAME [-LP] [dir] [change]" >&2
+		return 2 ;;
 	esac
 }
 
 #
 # ksh print emulation
 #
-#	print [-Rnprsu[n]] [arg ...]
+#	print [-Rnprsu[n]] [-f format] [arg ...]
 #
 #	-	end of options
 #	-R	BSD-style -- only accept -n, no escapes
 #	-n	do not add trailing newline
 #	-p	no-op (no coprocesses)
 #	-r	no escapes
-#	-s	no-op (print to the history file)
+#	-s	print to the history file
 #	-u n	redirect output to fd n
+#	-f format	printf "$format" "$@"
 #
 
 print()
 {
 	local eflag=-e
-	local nflag=
+	local nflag= fflag= c
 	local fd=1
 
 	OPTIND=1
-	while getopts "Rnprsu:" c
+	while getopts "fRnprsu:" c
 	do
 		case $c in
-		R)	eflag=
-			;;
-		r)	eflag=
-			;;
-		n)	nflag=-n
-			;;
-		u)	fd=$OPTARG
-			;;
-		p|s)	;;
+		R)	eflag= ;;
+		r)	eflag= ;;
+		n)	nflag=-n ;;
+		s)	sflag=y ;;
+		f)	fflag=y ;;
+		u)	fd=$OPTARG ;;
+		p)	;;
 		esac
 	done
-	shift $[ $OPTIND - 1 ]
+	shift $(( $OPTIND - 1 ))
 
-	builtin echo $eflag $nflag "$@" >&$fd
+	if [ -n "$fflag" ]; then
+		builtin printf "$@" >&$fd
+		return
+	fi
+
+	case "$sflag" in
+	y)	builtin history -s "$*" ;;
+	*)	builtin echo $eflag $nflag "$@" >&$fd
+	esac
 }
 
 # substring function
@@ -162,7 +225,7 @@ substring ()
 		;;
 	esac
 	# test for too few or too many arguments
-	if [ x"$1" = x -o $# -gt 2 ]; then
+	if [ x"$1" = x ] || [ $# -gt 2 ]; then
 		print -u2 'substring: bad argument count'
 		return 1
 	fi

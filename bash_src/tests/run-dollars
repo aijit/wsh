@@ -1,3 +1,2 @@
-../bash ./dollar-star.sh a b > x 2>&1
-../bash ./dollar-at.sh a b >>x 2>&1
-diff x dollar.right && rm -f x
+${THIS_SH} ./dollar-at-star > ${BASH_TSTOUT} 2>&1
+diff ${BASH_TSTOUT} dollar.right && rm -f ${BASH_TSTOUT}

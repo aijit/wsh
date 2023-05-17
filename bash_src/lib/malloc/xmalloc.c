@@ -1,26 +1,28 @@
 /* xmalloc.c -- safe versions of malloc and realloc */
 
-/* Copyright (C) 1991 Free Software Foundation, Inc.
+/* Copyright (C) 1991-2003 Free Software Foundation, Inc.
 
    This file is part of GNU Readline, a library for reading lines
    of text with interactive input and history editing.
 
-   Readline is free software; you can redistribute it and/or modify it
-   under the terms of the GNU General Public License as published by the
-   Free Software Foundation; either version 1, or (at your option) any
-   later version.
+   Readline is free software: you can redistribute it and/or modify
+   it under the terms of the GNU General Public License as published by
+   the Free Software Foundation, either version 3 of the License, or
+   (at your option) any later version.
 
-   Readline is distributed in the hope that it will be useful, but
-   WITHOUT ANY WARRANTY; without even the implied warranty of
-   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
-   General Public License for more details.
+   Readline is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU General Public License for more details.
 
    You should have received a copy of the GNU General Public License
-   along with Readline; see the file COPYING.  If not, write to the Free
-   Software Foundation, 675 Mass Ave, Cambridge, MA 02139, USA. */
+   along with Readline.  If not, see <http://www.gnu.org/licenses/>.
+*/
 
-#if defined (ALREADY_HAVE_XMALLOC)
-#else
+#if defined (HAVE_CONFIG_H)
+#include <config.h>
+#endif
+
 #include <stdio.h>
 
 #if defined (HAVE_STDLIB_H)
@@ -29,7 +31,16 @@
 #  include "ansi_stdlib.h"
 #endif /* HAVE_STDLIB_H */
 
-static void memory_error_and_abort ();
+/* Generic pointer type. */
+#ifndef PTR_T
+
+#if defined (__STDC__)
+#  define PTR_T void *
+#else
+#  define PTR_T char *
+#endif
+
+#endif /* PTR_T */
 
 /* **************************************************************** */
 /*								    */
@@ -37,42 +48,47 @@ static void memory_error_and_abort ();
 /*								    */
 /* **************************************************************** */
 
-/* Return a pointer to free()able block of memory large enough
-   to hold BYTES number of bytes.  If the memory cannot be allocated,
-   print an error message and abort. */
-char *
-xmalloc (bytes)
-     int bytes;
-{
-  char *temp = (char *)malloc (bytes);
-
-  if (!temp)
-    memory_error_and_abort ("xmalloc");
-  return (temp);
-}
-
-char *
-xrealloc (pointer, bytes)
-     char *pointer;
-     int bytes;
-{
-  char *temp;
-
-  if (!pointer)
-    temp = (char *)malloc (bytes);
-  else
-    temp = (char *)realloc (pointer, bytes);
-
-  if (!temp)
-    memory_error_and_abort ("xrealloc");
-  return (temp);
-}
-
 static void
 memory_error_and_abort (fname)
      char *fname;
 {
-  fprintf (stderr, "%s: Out of virtual memory!\n", fname);
-  abort ();
+  fprintf (stderr, "%s: out of virtual memory\n", fname);
+  exit (2);
 }
-#endif /* !ALREADY_HAVE_XMALLOC */
+
+/* Return a pointer to free()able block of memory large enough
+   to hold BYTES number of bytes.  If the memory cannot be allocated,
+   print an error message and abort. */
+PTR_T
+xmalloc (bytes)
+     size_t bytes;
+{
+  PTR_T temp;
+
+  temp = malloc (bytes);
+  if (temp == 0)
+    memory_error_and_abort ("xmalloc");
+  return (temp);
+}
+
+PTR_T
+xrealloc (pointer, bytes)
+     PTR_T pointer;
+     size_t bytes;
+{
+  PTR_T temp;
+
+  temp = pointer ? realloc (pointer, bytes) : malloc (bytes);
+
+  if (temp == 0)
+    memory_error_and_abort ("xrealloc");
+  return (temp);
+}
+
+void
+xfree (string)
+     PTR_T string;
+{
+  if (string)
+    free (string);
+}

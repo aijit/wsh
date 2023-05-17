@@ -1,26 +1,29 @@
-/* Declarations for getopt.
-   Copyright (C) 1989, 1990, 1991, 1992, 1993 Free Software Foundation, Inc.
+/* getopt.h - declarations for getopt. */
 
-   This program is free software; you can redistribute it and/or modify it
-   under the terms of the GNU General Public License as published by the
-   Free Software Foundation; either version 2, or (at your option) any
-   later version.
+/* Copyright (C) 1989, 1990, 1991, 1992, 1993, 2008,2009 Free Software Foundation, Inc.
 
-   This program is distributed in the hope that it will be useful,
+   This file is part of GNU Bash, the Bourne Again SHell.
+
+   Bash is free software: you can redistribute it and/or modify
+   it under the terms of the GNU General Public License as published by
+   the Free Software Foundation, either version 3 of the License, or
+   (at your option) any later version.
+
+   Bash is distributed in the hope that it will be useful,
    but WITHOUT ANY WARRANTY; without even the implied warranty of
    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
    GNU General Public License for more details.
 
    You should have received a copy of the GNU General Public License
-   along with this program; if not, write to the Free Software
-   Foundation, 675 Mass Ave, Cambridge, MA 02139, USA.  */
+   along with Bash.  If not, see <http://www.gnu.org/licenses/>.
+*/
 
-#ifndef _GETOPT_H
-#define _GETOPT_H 1
+/* XXX THIS HAS BEEN MODIFIED FOR INCORPORATION INTO BASH XXX */
 
-#ifdef	__cplusplus
-extern "C" {
-#endif
+#ifndef _SH_GETOPT_H
+#define _SH_GETOPT_H 1
+
+#include "stdc.h"
 
 /* For communication from `getopt' to the caller.
    When `getopt' finds an option that takes an argument,
@@ -28,7 +31,7 @@ extern "C" {
    Also, when `ordering' is RETURN_IN_ORDER,
    each non-option ARGV-element is returned here.  */
 
-extern char *optarg;
+extern char *sh_optarg;
 
 /* Index in ARGV of the next element to be scanned.
    This is used for communication to and from the caller
@@ -39,91 +42,41 @@ extern char *optarg;
    When `getopt' returns EOF, this is the index of the first of the
    non-option elements that the caller should itself scan.
 
-   Otherwise, `optind' communicates from one call to the next
+   Otherwise, `sh_optind' communicates from one call to the next
    how much of ARGV has been scanned so far.  */
 
-extern int optind;
+extern int sh_optind;
 
 /* Callers store zero here to inhibit the error message `getopt' prints
    for unrecognized options.  */
 
-extern int opterr;
+extern int sh_opterr;
 
 /* Set to an option character which was unrecognized.  */
 
-extern int optopt;
+extern int sh_optopt;
 
-/* Describe the long-named options requested by the application.
-   The LONG_OPTIONS argument to getopt_long or getopt_long_only is a vector
-   of `struct option' terminated by an element containing a name which is
-   zero.
+/* Set to 1 when an unrecognized option is encountered. */
+extern int sh_badopt;
 
-   The field `has_arg' is:
-   no_argument		(or 0) if the option does not take an argument,
-   required_argument	(or 1) if the option requires an argument,
-   optional_argument 	(or 2) if the option takes an optional argument.
+extern int sh_getopt __P((int, char *const *, const char *));
 
-   If the field `flag' is not NULL, it points to a variable that is set
-   to the value given in the field `val' when the option is found, but
-   left unchanged if the option is not found.
-
-   To have a long-named option do something other than set an `int' to
-   a compiled-in constant, such as set a value from `optarg', set the
-   option's `flag' field to zero and its `val' field to a nonzero
-   value (the equivalent single-letter option character, if there is
-   one).  For long options that have a zero `flag' field, `getopt'
-   returns the contents of the `val' field.  */
-
-struct option
+typedef struct sh_getopt_state
 {
-#if	__STDC__
-  const char *name;
-#else
-  char *name;
-#endif
-  /* has_arg can't be an enum because some compilers complain about
-     type mismatches in all the code that assumes it is an int.  */
-  int has_arg;
-  int *flag;
-  int val;
-};
+  char *gs_optarg;
+  int gs_optind;
+  int gs_curopt;
+  char *gs_nextchar;
+  int gs_charindex;
+  int gs_flags;
+} sh_getopt_state_t;
 
-/* Names for the values of the `has_arg' field of `struct option'.  */
+extern void sh_getopt_restore_state __P((char **));
 
-#define	no_argument		0
-#define required_argument	1
-#define optional_argument	2
+extern sh_getopt_state_t *sh_getopt_alloc_istate __P((void));
+extern void sh_getopt_dispose_istate __P((sh_getopt_state_t *));
 
-#if __STDC__
-#if defined(__GNU_LIBRARY__)
-/* Many other libraries have conflicting prototypes for getopt, with
-   differences in the consts, in stdlib.h.  To avoid compilation
-   errors, only prototype getopt for the GNU C library.  */
-extern int getopt (int argc, char *const *argv, const char *shortopts);
-#else /* not __GNU_LIBRARY__ */
-extern int getopt ();
-#endif /* not __GNU_LIBRARY__ */
-extern int getopt_long (int argc, char *const *argv, const char *shortopts,
-		        const struct option *longopts, int *longind);
-extern int getopt_long_only (int argc, char *const *argv,
-			     const char *shortopts,
-		             const struct option *longopts, int *longind);
+extern sh_getopt_state_t *sh_getopt_save_istate __P((void));
+extern void sh_getopt_restore_istate __P((sh_getopt_state_t *));
 
-/* Internal only.  Users should not call this directly.  */
-extern int _getopt_internal (int argc, char *const *argv,
-			     const char *shortopts,
-		             const struct option *longopts, int *longind,
-			     int long_only);
-#else /* not __STDC__ */
-extern int getopt ();
-extern int getopt_long ();
-extern int getopt_long_only ();
-
-extern int _getopt_internal ();
-#endif /* not __STDC__ */
-
-#ifdef	__cplusplus
-}
-#endif
-
-#endif /* _GETOPT_H */
+#endif /* _SH_GETOPT_H */

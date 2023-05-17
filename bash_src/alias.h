@@ -1,75 +1,70 @@
 /* alias.h -- structure definitions. */
 
-/* Copyright (C) 1987,1991 Free Software Foundation, Inc.
+/* Copyright (C) 1987-2009 Free Software Foundation, Inc.
 
    This file is part of GNU Bash, the Bourne Again SHell.
 
-   Bash is free software; you can redistribute it and/or modify it
-   under the terms of the GNU General Public License as published by
-   the Free Software Foundation; either version 1, or (at your option)
-   any later version.
+   Bash is free software: you can redistribute it and/or modify
+   it under the terms of the GNU General Public License as published by
+   the Free Software Foundation, either version 3 of the License, or
+   (at your option) any later version.
 
-   Bash is distributed in the hope that it will be useful, but WITHOUT
-   ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
-   or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public
-   License for more details.
+   Bash is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU General Public License for more details.
 
    You should have received a copy of the GNU General Public License
-   along with Bash; see the file COPYING.  If not, write to the Free
-   Software Foundation, 675 Mass Ave, Cambridge, MA 02139, USA. */
+   along with Bash.  If not, see <http://www.gnu.org/licenses/>.
+*/
 
-#if !defined (_ALIAS_)
-#define _ALIAS_
+#if !defined (_ALIAS_H_)
+#define _ALIAS_H_
 
-#include "hash.h"
+#include "stdc.h"
 
-extern char *xmalloc ();
+#include "hashlib.h"
 
-#if !defined (whitespace)
-#  define whitespace(c) (((c) == ' ') || ((c) == '\t'))
-#endif /* !whitespace */
-
-#if !defined (savestring)
-#  define savestring(x) (char *)strcpy (xmalloc (1 + strlen (x)), (x))
-#endif /* !savestring */
-
-#if !defined (NULL)
-#  if defined (__STDC__)
-#    define NULL ((void *) 0)
-#  else
-#    define NULL 0x0
-#  endif /* !__STDC__ */
-#endif /* !NULL */
-
-typedef struct {
+typedef struct alias {
   char *name;
   char *value;
-} ASSOC;
+  char flags;
+} alias_t;
+
+/* Values for `flags' member of struct alias. */
+#define AL_EXPANDNEXT		0x1
+#define AL_BEINGEXPANDED	0x2
 
 /* The list of known aliases. */
 extern HASH_TABLE *aliases;
 
-extern void initialize_aliases ();
+extern void initialize_aliases __P((void));
 
 /* Scan the list of aliases looking for one with NAME.  Return NULL
-   if the alias doesn't exist, else a pointer to the assoc. */
-extern ASSOC *find_alias ();
+   if the alias doesn't exist, else a pointer to the alias. */
+extern alias_t *find_alias __P((char *));
 
 /* Return the value of the alias for NAME, or NULL if there is none. */
-extern char *get_alias_value ();
+extern char *get_alias_value __P((char *));
 
 /* Make a new alias from NAME and VALUE.  If NAME can be found,
    then replace its value. */
-extern void add_alias ();
+extern void add_alias __P((char *, char *));
 
 /* Remove the alias with name NAME from the alias list.  Returns
    the index of the removed alias, or -1 if the alias didn't exist. */
-extern int remove_alias ();
+extern int remove_alias __P((char *));
 
-/* Return a new line, with any aliases expanded. */
-extern char *alias_expand ();
+/* Remove all aliases. */
+extern void delete_all_aliases __P((void));
 
 /* Return an array of all defined aliases. */
-extern ASSOC **all_aliases ();
+extern alias_t **all_aliases __P((void));
 
-#endif /* _ALIAS_ */
+/* Expand a single word for aliases. */
+extern char *alias_expand_word __P((char *));
+
+/* Return a new line, with any aliases expanded. */
+extern char *alias_expand __P((char *));
+
+#endif /* _ALIAS_H_ */

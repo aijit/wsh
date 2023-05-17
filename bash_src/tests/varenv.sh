@@ -92,3 +92,134 @@ echo $c $d
 d=$c c=$d
 expect "1 1"
 echo $c $d
+
+# just for completeness
+unset d c
+expect unset
+echo ${d-unset}
+
+# no output
+export a
+a=bcde
+export a
+/bin/true 2>/dev/null
+
+func()
+{
+	local YYZ
+
+	YYZ="song by rush"
+	echo $YYZ
+	echo $A
+}
+
+YYZ="toronto airport"
+A="AVAR"
+echo $YYZ
+echo $A
+A=BVAR func
+echo $YYZ
+echo $A
+
+export A
+# Make sure expansion doesn't use assignment statements preceding a builtin
+A=ZVAR echo $A
+
+XPATH=/bin:/usr/bin:/usr/local/bin:.
+func2()
+{
+	local z=yy
+	local -a avar=( ${XPATH//: } )
+	echo ${avar[@]}
+	local
+}
+
+avar=42
+echo $avar
+func2
+echo $avar
+
+# try to set an attribute for an unset variable; make sure it persists
+# when the variable is assigned a value
+declare -i ivar
+
+ivar=10
+
+declare -p ivar
+unset ivar
+
+# export an unset variable, make sure it is not suddenly set, but make
+# sure the export attribute persists when the variable is assigned a
+# value
+export ivar
+echo ${ivar-unset}
+
+ivar=42
+declare -p ivar
+
+# make sure set [-+]o ignoreeof and $IGNOREEOF are reflected
+unset IGNOREEOF
+set +o ignoreeof
+set -o ignoreeof
+if [ "$IGNOREEOF" -ne 10 ]; then
+	echo "./varenv.sh: set -o ignoreeof is not reflected in IGNOREEOF" >&2
+fi
+unset IGNOREEOF
+set +o ignoreeof
+
+# older versions of bash used to not reset RANDOM in subshells correctly
+[[ $RANDOM -eq $(echo $RANDOM) ]] && echo "RANDOM: problem with subshells"
+
+# make sure that shopt -o is reflected in $SHELLOPTS
+# first, get rid of things that might be set automatically via shell
+# variables
+set +o posix
+set +o ignoreeof
+set +o monitor
+echo $-
+echo ${SHELLOPTS}
+shopt -so physical
+echo $-
+echo ${SHELLOPTS}
+
+# and make sure it is readonly
+readonly -p | grep SHELLOPTS
+
+# This was an error in bash versions prior to bash-2.04.  The `set -a'
+# should cause the assignment statement that's an argument to typeset
+# to create an exported variable
+unset FOOFOO
+FOOFOO=bar
+set -a
+typeset FOOFOO=abcde
+
+printenv FOOFOO
+
+# test out export behavior of variable assignments preceding builtins and
+# functions
+$THIS_SH ./varenv1.sub
+
+# more tests; bugs in bash up to version 2.05a
+$THIS_SH ./varenv2.sub
+
+# more tests; bugs in bash IFS scoping up through version 4.2
+$THIS_SH ./varenv3.sub
+
+# scoping problems with declare -g through bash-4.2
+${THIS_SH} ./varenv4.sub
+
+# more scoping and declaration problems with -g and arrays through bash-4.2
+${THIS_SH} ./varenv5.sub
+
+# variable scoping in the presence of nameref
+${THIS_SH} ./varenv6.sub
+
+# variable declaration problems with arrays and readonly local variables
+${THIS_SH} ./varenv7.sub
+
+# variable visibility problems with process substitution subshells in
+# redirections
+${THIS_SH} ./varenv8.sub
+
+# make sure variable scoping is done right
+tt() { typeset a=b;echo a=$a; };a=z;echo a=$a;tt;echo a=$a

@@ -4,32 +4,46 @@
 
    This file is part of GNU Bash, the Bourne Again SHell.
 
-   Bash is free software; you can redistribute it and/or modify it
-   under the terms of the GNU General Public License as published by
-   the Free Software Foundation; either version 1, or (at your option)
-   any later version.
+   Bash is free software: you can redistribute it and/or modify
+   it under the terms of the GNU General Public License as published by
+   the Free Software Foundation, either version 3 of the License, or
+   (at your option) any later version.
 
-   Bash is distributed in the hope that it will be useful, but WITHOUT
-   ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
-   or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public
-   License for more details.
+   Bash is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU General Public License for more details.
 
    You should have received a copy of the GNU General Public License
-   along with Bash; see the file COPYING.  If not, write to the Free
-   Software Foundation, 675 Mass Ave, Cambridge, MA 02139, USA. */
+   along with Bash.  If not, see <http://www.gnu.org/licenses/>.
+*/
 
 /*  Write output in 128-byte chunks until we get a sigpipe or write gets an
     EPIPE.  Then report how many bytes we wrote.  We assume that this is the
     pipe size. */
+#include <config.h>
+
+#if defined (HAVE_UNISTD_H)
+#  ifdef _MINIX
+#    include <sys/types.h>
+#  endif
+#  include <unistd.h>
+#endif
 
 #include <stdio.h>
-#include <sys/types.h>
+#ifndef _MINIX
+#include "../bashtypes.h"
+#endif
 #include <signal.h>
 #include <errno.h>
 
 #include "../command.h"
 #include "../general.h"
+#include "../sig.h"
+
+#ifndef errno
 extern int errno;
+#endif
 
 int nw;
 
@@ -41,6 +55,7 @@ sigpipe (sig)
   exit (0);
 }
 
+int
 main (argc, argv)
      int argc;
      char **argv;
@@ -51,9 +66,7 @@ main (argc, argv)
   for (i = 0; i < 128; i++)
     buf[i] = ' ';
 
-#ifndef __NT_VC__
   signal (SIGPIPE, sigpipe);
-#endif
 
   nw = 0;
   for (;;)
@@ -62,4 +75,5 @@ main (argc, argv)
       n = write (1, buf, 128);
       nw += n;
     }
+  return (0);
 }

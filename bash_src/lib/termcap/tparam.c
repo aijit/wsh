@@ -1,23 +1,43 @@
-/* Merge parameters into a termcap entry string.
-   Copyright (C) 1985, 1987, 1993 Free Software Foundation, Inc.
+/* tparam.c - merge parameters into a termcap entry string. */
 
-This program is free software; you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation; either version 2, or (at your option)
-any later version.
+/* Copyright (C) 1985, 1986, 1993,1994, 1995, 1998, 2001,2003,2005,2006,2008,2009 Free Software Foundation, Inc.
 
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
+   This file is part of GNU Bash, the Bourne Again SHell.
 
-You should have received a copy of the GNU General Public License
-along with this program; see the file COPYING.  If not, write to
-the Free Software Foundation, 675 Mass Ave, Cambridge, MA 02139, USA.  */
+   Bash is free software: you can redistribute it and/or modify
+   it under the terms of the GNU General Public License as published by
+   the Free Software Foundation, either version 3 of the License, or
+   (at your option) any later version.
+
+   Bash is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU General Public License for more details.
+
+   You should have received a copy of the GNU General Public License
+   along with Bash.  If not, see <http://www.gnu.org/licenses/>.
+*/
 
 /* Emacs config.h may rename various library functions such as malloc.  */
 #ifdef HAVE_CONFIG_H
-#include "config.h"
+#include <config.h>
+
+#ifdef HAVE_STDLIB_H 
+#  include <stdlib.h>
+#else
+extern char *getenv ();
+extern char *malloc ();
+extern char *realloc ();
+#endif
+
+#if defined (HAVE_STRING_H)
+#include <string.h>
+#endif
+
+#if !defined (HAVE_BCOPY) && (defined (HAVE_STRING_H) || defined (STDC_HEADERS))
+#  define bcopy(s, d, n)	memcpy ((d), (s), (n))
+#endif
+
 #else /* not HAVE_CONFIG_H */
 
 #if defined(HAVE_STRING_H) || defined(STDC_HEADERS)
@@ -33,6 +53,8 @@ char *realloc ();
 #endif
 
 #endif /* not HAVE_CONFIG_H */
+
+#include "ltcap.h"
 
 #ifndef NULL
 #define NULL (char *) 0
@@ -92,23 +114,21 @@ tparam (string, outstring, len, arg0, arg1, arg2, arg3)
      int len;
      int arg0, arg1, arg2, arg3;
 {
-#ifdef NO_ARG_ARRAY
   int arg[4];
+
   arg[0] = arg0;
   arg[1] = arg1;
   arg[2] = arg2;
   arg[3] = arg3;
   return tparam1 (string, outstring, len, NULL, NULL, arg);
-#else
-  return tparam1 (string, outstring, len, NULL, NULL, &arg0);
-#endif
 }
 
-char *BC;
-char *UP;
+__private_extern__ char *BC;
+__private_extern__ char *UP;
 
 static char tgoto_buf[50];
 
+__private_extern__
 char *
 tgoto (cm, hpos, vpos)
      char *cm;

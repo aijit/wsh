@@ -1,54 +1,52 @@
 /* unwind_prot.h - Macros and functions for hacking unwind protection. */
 
-/* Copyright (C) 1993 Free Software Foundation, Inc.
+/* Copyright (C) 1993-2009 Free Software Foundation, Inc.
 
    This file is part of GNU Bash, the Bourne Again SHell.
 
-   Bash is free software; you can redistribute it and/or modify it under
-   the terms of the GNU General Public License as published by the Free
-   Software Foundation; either version 2, or (at your option) any later
-   version.
+   Bash is free software: you can redistribute it and/or modify
+   it under the terms of the GNU General Public License as published by
+   the Free Software Foundation, either version 3 of the License, or
+   (at your option) any later version.
 
-   Bash is distributed in the hope that it will be useful, but WITHOUT ANY
-   WARRANTY; without even the implied warranty of MERCHANTABILITY or
-   FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
-   for more details.
+   Bash is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU General Public License for more details.
 
-   You should have received a copy of the GNU General Public License along
-   with Bash; see the file COPYING.  If not, write to the Free Software
-   Foundation, 675 Mass Ave, Cambridge, MA 02139, USA. */
+   You should have received a copy of the GNU General Public License
+   along with Bash.  If not, see <http://www.gnu.org/licenses/>.
+*/
 
 #if !defined (_UNWIND_PROT_H)
 #define _UNWIND_PROT_H
 
+extern void uwp_init __P((void));
+
 /* Run a function without interrupts. */
-void
-  begin_unwind_frame (), discard_unwind_frame (),
-  run_unwind_frame (), add_unwind_protect (), remove_unwind_protect (),
-  run_unwind_protects ();
+extern void begin_unwind_frame __P((char *));
+extern void discard_unwind_frame __P((char *));
+extern void run_unwind_frame __P((char *));
+extern void add_unwind_protect (); /* Not portable to arbitrary C99 hosts.  */
+extern void remove_unwind_protect __P((void));
+extern void run_unwind_protects __P((void));
+extern void clear_unwind_protect_list __P((int));
+extern int have_unwind_protects __P((void));
+extern int unwind_protect_tag_on_stack __P((const char *));
+extern void uwp_init __P((void));
 
 /* Define for people who like their code to look a certain way. */
 #define end_unwind_frame()
 
-/* How to protect an integer. */
-#define unwind_protect_int(X) unwind_protect_var (&(X), (char *)(X), sizeof (int))
+/* How to protect a variable.  */
+#define unwind_protect_var(X) unwind_protect_mem ((char *)&(X), sizeof (X))
+extern void unwind_protect_mem __P((char *, int));
 
-/* How to protect a pointer to a string. */
-#define unwind_protect_string(X) \
-  unwind_protect_var ((int *)&(X), (X), sizeof (char *))
-
-/* How to protect any old pointer. */
-#define unwind_protect_pointer(X) unwind_protect_string (X)
-
-/* How to protect the contents of a jmp_buf. */
-#ifndef __NT_VC__
-#define unwind_protect_jmp_buf(X) \
-  unwind_protect_var ((int *)(X), (char *)(X), sizeof (jmp_buf))
-#else
-#include "config.h"
-#define unwind_protect_jmp_buf(X) nt_unwind_protect_jmp_buf (nt_long_jmp_##X)
-#endif
-
-void unwind_protect_var (int *var, char *value, int size);
+/* Backwards compatibility */
+#define unwind_protect_int	unwind_protect_var
+#define unwind_protect_short	unwind_protect_var
+#define unwind_protect_string	unwind_protect_var
+#define unwind_protect_pointer	unwind_protect_var
+#define unwind_protect_jmp_buf	unwind_protect_var
 
 #endif /* _UNWIND_PROT_H */

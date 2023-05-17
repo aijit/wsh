@@ -1,62 +1,257 @@
 This file is cd.def, from which is created cd.c.  It implements the
-builtins "cd", "pwd", "pushd", "popd", and "dirs" in Bash.
+builtins "cd" and "pwd" in Bash.
 
-Copyright (C) 1987, 1989, 1991 Free Software Foundation, Inc.
+Copyright (C) 1987-2016 Free Software Foundation, Inc.
 
 This file is part of GNU Bash, the Bourne Again SHell.
 
-Bash is free software; you can redistribute it and/or modify it under
-the terms of the GNU General Public License as published by the Free
-Software Foundation; either version 1, or (at your option) any later
-version.
+Bash is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
 
-Bash is distributed in the hope that it will be useful, but WITHOUT ANY
-WARRANTY; without even the implied warranty of MERCHANTABILITY or
-FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
-for more details.
+Bash is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
 
-You should have received a copy of the GNU General Public License along
-with Bash; see the file COPYING.  If not, write to the Free Software
-Foundation, 675 Mass Ave, Cambridge, MA 02139, USA.
+You should have received a copy of the GNU General Public License
+along with Bash.  If not, see <http://www.gnu.org/licenses/>.
 
 $PRODUCES cd.c
+#include <config.h>
+
+#if defined (HAVE_UNISTD_H)
+#  ifdef _MINIX
+#    include <sys/types.h>
+#  endif
+#  include <unistd.h>
+#endif
+
+#include "../bashtypes.h"
+#include "posixdir.h"
+#include "posixstat.h"
+#if defined (HAVE_SYS_PARAM_H)
+#include <sys/param.h>
+#endif
+#include <fcntl.h>
 
 #include <stdio.h>
-#include <sys/param.h>
 
-#if defined (HAVE_STRING_H)
-#  include <string.h>
-#else /* !HAVE_STRING_H */
-#  include <strings.h>
-#endif /* !HAVE_STRING_H */
+#include "../bashansi.h"
+#include "../bashintl.h"
 
 #include <errno.h>
 #include <tilde/tilde.h>
 
 #include "../shell.h"
 #include "../flags.h"
-#include "../maxpath.h"
+#include "maxpath.h"
 #include "common.h"
+#include "bashgetopt.h"
 
 #if !defined (errno)
 extern int errno;
 #endif /* !errno */
 
-static int change_to_directory (), cd_to_string ();
+extern int posixly_correct;
+extern int array_needs_making;
+extern const char * const bash_getcwd_errstr;
+
+static int bindpwd __P((int));
+static int setpwd __P((char *));
+static char *resetpwd __P((char *));
+static int change_to_directory __P((char *, int, int));
+
+static int cdxattr __P((char *, char **));
+static void resetxattr __P((void));
+
+/* Change this to 1 to get cd spelling correction by default. */
+int cdspelling = 0;
+
+int cdable_vars;
+
+static int eflag;	/* file scope so bindpwd() can see it */
+static int xattrflag;	/* O_XATTR support for openat */
+static int xattrfd = -1;
 
 $BUILTIN cd
 $FUNCTION cd_builtin
-$SHORT_DOC cd [dir]
-Change the current directory to DIR.  The variable $HOME is the
-default DIR.  The variable $CDPATH defines the search path for
-the directory containing DIR.  Alternative directory names are
-separated by a colon (:).  A null directory name is the same as
-the current directory, i.e. `.'.  If DIR begins with a slash (/),
-then $CDPATH is not used.  If the directory is not found, and the
-shell variable `cdable_vars' exists, then try the word as a variable
-name.  If that variable has a value, then cd to the value of that
-variable.
+$SHORT_DOC cd [-L|[-P [-e]] [-@]] [dir]
+Change the shell working directory.
+
+Change the current directory to DIR.  The default DIR is the value of the
+HOME shell variable.
+
+The variable CDPATH defines the search path for the directory containing
+DIR.  Alternative directory names in CDPATH are separated by a colon (:).
+A null directory name is the same as the current directory.  If DIR begins
+with a slash (/), then CDPATH is not used.
+
+If the directory is not found, and the shell option `cdable_vars' is set,
+the word is assumed to be  a variable name.  If that variable has a value,
+its value is used for DIR.
+
+Options:
+  -L	force symbolic links to be followed: resolve symbolic
+		links in DIR after processing instances of `..'
+  -P	use the physical directory structure without following
+		symbolic links: resolve symbolic links in DIR before
+		processing instances of `..'
+  -e	if the -P option is supplied, and the current working
+		directory cannot be determined successfully, exit with
+		a non-zero status
+#if defined (O_XATTR)
+  -@	on systems that support it, present a file with extended
+		attributes as a directory containing the file attributes
+#endif
+
+The default is to follow symbolic links, as if `-L' were specified.
+`..' is processed by removing the immediately previous pathname component
+back to a slash or the beginning of DIR.
+
+Exit Status:
+Returns 0 if the directory is changed, and if $PWD is set successfully when
+-P is used; non-zero otherwise.
 $END
+
+/* Just set $PWD, don't change OLDPWD.  Used by `pwd -P' in posix mode. */
+static int
+setpwd (dirname)
+     char *dirname;
+{
+  int old_anm;
+  SHELL_VAR *tvar;
+
+  old_anm = array_needs_making;
+  tvar = bind_variable ("PWD", dirname ? dirname : "", 0);
+  if (tvar && readonly_p (tvar))
+    return EXECUTION_FAILURE;
+  if (tvar && old_anm == 0 && array_needs_making && exported_p (tvar))
+    {
+      update_export_env_inplace ("PWD=", 4, dirname ? dirname : "");
+      array_needs_making = 0;
+    }
+  return EXECUTION_SUCCESS;
+}
+
+static int
+bindpwd (no_symlinks)
+     int no_symlinks;
+{
+  char *dirname, *pwdvar;
+  int old_anm, r;
+  SHELL_VAR *tvar;
+
+  r = sh_chkwrite (EXECUTION_SUCCESS);
+
+#define tcwd the_current_working_directory
+  dirname = tcwd ? (no_symlinks ? sh_physpath (tcwd, 0) : tcwd)
+  		 : get_working_directory ("cd");
+#undef tcwd
+
+  old_anm = array_needs_making;
+  pwdvar = get_string_value ("PWD");
+
+  tvar = bind_variable ("OLDPWD", pwdvar, 0);
+  if (tvar && readonly_p (tvar))
+    r = EXECUTION_FAILURE;
+
+  if (old_anm == 0 && array_needs_making && exported_p (tvar))
+    {
+      update_export_env_inplace ("OLDPWD=", 7, pwdvar);
+      array_needs_making = 0;
+    }
+
+  if (setpwd (dirname) == EXECUTION_FAILURE)
+    r = EXECUTION_FAILURE;
+  if (dirname == 0 && eflag)
+    r = EXECUTION_FAILURE;
+
+  if (dirname && dirname != the_current_working_directory)
+    free (dirname);
+
+  return (r);
+}
+
+/* Call get_working_directory to reset the value of
+   the_current_working_directory () */
+static char *
+resetpwd (caller)
+     char *caller;
+{
+  char *tdir;
+      
+  FREE (the_current_working_directory);
+  the_current_working_directory = (char *)NULL;
+  tdir = get_working_directory (caller);
+  return (tdir);
+}
+
+static int
+cdxattr (dir, ndirp)
+     char *dir;		/* don't assume we can always free DIR */
+     char **ndirp;	/* return new constructed directory name */
+{
+#if defined (O_XATTR)
+  int apfd, fd, r, e;
+  char buf[11+40+40];	/* construct new `fake' path for pwd */
+
+  apfd = openat (AT_FDCWD, dir, O_RDONLY|O_NONBLOCK);
+  if (apfd < 0)
+    return -1;
+  fd = openat (apfd, ".", O_XATTR);
+  e = errno;
+  close (apfd);		/* ignore close error for now */
+  errno = e;
+  if (fd < 0)
+    return -1;
+  r = fchdir (fd);	/* assume fchdir exists everywhere with O_XATTR */
+  if (r < 0)
+    {
+      close (fd);
+      return -1;
+    }
+  /* NFSv4 and ZFS extended attribute directories do not have names which are
+     visible in the standard Unix directory tree structure.  To ensure we have
+     a valid name for $PWD, we synthesize one under /proc, but to keep that
+     path valid, we need to keep the file descriptor open as long as we are in
+     this directory.  This imposes a certain structure on /proc. */
+  if (ndirp)
+    {
+      sprintf (buf, "/proc/%d/fd/%d", getpid(), fd);
+      *ndirp = savestring (buf);
+    }
+
+  if (xattrfd >= 0)
+    close (xattrfd);
+  xattrfd = fd;  
+
+  return r;
+#else
+  return -1;
+#endif
+}
+
+/* Clean up the O_XATTR baggage.  Currently only closes xattrfd */
+static void
+resetxattr ()
+{
+#if defined (O_XATTR)
+  if (xattrfd >= 0)
+    {
+      close (xattrfd);
+      xattrfd = -1;
+    }
+#else
+  xattrfd = -1;		/* not strictly necessary */
+#endif
+}
+
+#define LCD_DOVARS	0x001
+#define LCD_DOSPELL	0x002
+#define LCD_PRINTPATH	0x004
+#define LCD_FREEDIRNAME	0x008
 
 /* This builtin is ultimately the way that all user-visible commands should
    change the current working directory.  It is called by cd_to_string (),
@@ -66,624 +261,415 @@ int
 cd_builtin (list)
      WORD_LIST *list;
 {
-  char *dirname;
+  char *dirname, *cdpath, *path, *temp;
+  int path_index, no_symlinks, opt, lflag, e;
 
 #if defined (RESTRICTED_SHELL)
   if (restricted)
     {
-      builtin_error ("restricted");
+      sh_restricted ((char *)NULL);
       return (EXECUTION_FAILURE);
     }
 #endif /* RESTRICTED_SHELL */
 
-  if (list)
+  eflag = 0;
+  no_symlinks = no_symbolic_links;
+  xattrflag = 0;
+  reset_internal_getopt ();
+#if defined (O_XATTR)
+  while ((opt = internal_getopt (list, "eLP@")) != -1)
+#else
+  while ((opt = internal_getopt (list, "eLP")) != -1)
+#endif
     {
-      char *extract_colon_unit ();
-      char *path_string = get_string_value ("CDPATH");
-      char *path;
-      int path_index = 0, dirlen, pathlen;
-
-      dirname = list->word->word;
-
-      if (path_string && !absolute_pathname (dirname))
+      switch (opt)
 	{
-	  while ((path = extract_colon_unit (path_string, &path_index)))
-	    {
-	      char *dir;
-
-	      if (*path == '~')
-		{
-		  char *te_string = tilde_expand (path);
-
-		  free (path);
-		  path = te_string;
-		}
-
-	      if (!*path)
-		{
-		  free (path);
-		  path = xmalloc (2);
-		  path[0] = '.';	/* by definition. */
-		  path[1] = '\0';
-		}
-
-	      dirlen = strlen (dirname);
-	      pathlen = strlen (path);
-	      dir = xmalloc (2 + dirlen + pathlen);
-	      strcpy (dir, path);
-	      if (path[pathlen - 1] != '/')
-	        {
-	          dir[pathlen++] = '/';
-	          dir[pathlen] = '\0';
-	        }
-	      strcpy (dir + pathlen, dirname);
-	      free (path);
-
-	      if (change_to_directory (dir))
-		{
-		  /* replaces (strncmp (dir, "./", 2) != 0) */
-		  if (dir[0] != '.' || dir[1] != '/')
-		    printf ("%s\n", dir);
-
-		  free (dir);
-		  goto bind_and_exit;
-		}
-	      else
-		free (dir);
-	    }
+	case 'P':
+	  no_symlinks = 1;
+	  break;
+	case 'L':
+	  no_symlinks = 0;
+	  break;
+	case 'e':
+	  eflag = 1;
+	  break;
+#if defined (O_XATTR)
+	case '@':
+	  xattrflag = 1;
+	  break;
+#endif
+	CASE_HELPOPT;
+	default:
+	  builtin_usage ();
+	  return (EX_USAGE);
 	}
-
-      if (!change_to_directory (dirname))
-	{
-	  /* Maybe this is `cd -', equivalent to `cd $OLDPWD' */
-	  if (dirname[0] == '-' && dirname[1] == '\0')
-	    {
-	      char *t = get_string_value ("OLDPWD");
-
-	      if (t && change_to_directory (t))
-		goto bind_and_exit;
-	    }
-
-	  /* If the user requests it, then perhaps this is the name of
-	     a shell variable, whose value contains the directory to
-	     change to.  If that is the case, then change to that
-	     directory. */
-	  if (find_variable ("cdable_vars"))
-	    {
-	      char *t = get_string_value (dirname);
-
-	      if (t && change_to_directory (t))
-		{
-		  printf ("%s\n", t);
-		  goto bind_and_exit;
-		}
-	    }
-
-	  file_error (dirname);
-	  return (EXECUTION_FAILURE);
-	}
-      goto bind_and_exit;
     }
-  else
+  list = loptend;
+
+  lflag = (cdable_vars ? LCD_DOVARS : 0) |
+	  ((interactive && cdspelling) ? LCD_DOSPELL : 0);
+  if (eflag && no_symlinks == 0)
+    eflag = 0;
+
+  if (list == 0)
     {
+      /* `cd' without arguments is equivalent to `cd $HOME' */
       dirname = get_string_value ("HOME");
 
-      if (!dirname)
-	return (EXECUTION_FAILURE);
-
-      if (!change_to_directory (dirname))
+      if (dirname == 0)
 	{
-	  file_error (dirname);
+	  builtin_error (_("HOME not set"));
 	  return (EXECUTION_FAILURE);
 	}
-
-    bind_and_exit:
-      {
-	char *directory;
-
-	directory = get_working_directory ("cd");
-
-	bind_variable ("OLDPWD", get_string_value ("PWD"));
-	bind_variable ("PWD", directory);
-
-	FREE (directory);
-      }
-      return (EXECUTION_SUCCESS);
+      lflag = 0;
     }
+#if defined (CD_COMPLAINS)
+  else if (list->next)
+    {
+      builtin_error (_("too many arguments"));
+      return (EXECUTION_FAILURE);
+    }
+#endif
+#if 0
+  else if (list->word->word[0] == '\0')
+    {
+      builtin_error (_("null directory"));
+      return (EXECUTION_FAILURE);
+    }
+#endif
+  else if (list->word->word[0] == '-' && list->word->word[1] == '\0')
+    {
+      /* This is `cd -', equivalent to `cd $OLDPWD' */
+      dirname = get_string_value ("OLDPWD");
+
+      if (dirname == 0)
+	{
+	  builtin_error (_("OLDPWD not set"));
+	  return (EXECUTION_FAILURE);
+	}
+#if 0
+      lflag = interactive ? LCD_PRINTPATH : 0;
+#else
+      lflag = LCD_PRINTPATH;		/* According to SUSv3 */
+#endif
+    }
+  else if (absolute_pathname (list->word->word))
+    dirname = list->word->word;
+  else if (privileged_mode == 0 && (cdpath = get_string_value ("CDPATH")))
+    {
+      dirname = list->word->word;
+
+      /* Find directory in $CDPATH. */
+      path_index = 0;
+      while (path = extract_colon_unit (cdpath, &path_index))
+	{
+	  /* OPT is 1 if the path element is non-empty */
+	  opt = path[0] != '\0';
+	  temp = sh_makepath (path, dirname, MP_DOTILDE);
+	  free (path);
+
+	  if (change_to_directory (temp, no_symlinks, xattrflag))
+	    {
+	      /* POSIX.2 says that if a nonempty directory from CDPATH
+		 is used to find the directory to change to, the new
+		 directory name is echoed to stdout, whether or not
+		 the shell is interactive. */
+	      if (opt && (path = no_symlinks ? temp : the_current_working_directory))
+		printf ("%s\n", path);
+
+	      free (temp);
+#if 0
+	      /* Posix.2 says that after using CDPATH, the resultant
+		 value of $PWD will not contain `.' or `..'. */
+	      return (bindpwd (posixly_correct || no_symlinks));
+#else
+	      return (bindpwd (no_symlinks));
+#endif
+	    }
+	  else
+	    free (temp);
+	}
+
+#if 0
+      /* changed for bash-4.2 Posix cd description steps 5-6 */
+      /* POSIX.2 says that if `.' does not appear in $CDPATH, we don't
+	 try the current directory, so we just punt now with an error
+	 message if POSIXLY_CORRECT is non-zero.  The check for cdpath[0]
+	 is so we don't mistakenly treat a CDPATH value of "" as not
+	 specifying the current directory. */
+      if (posixly_correct && cdpath[0])
+	{
+	  builtin_error ("%s: %s", dirname, strerror (ENOENT));
+	  return (EXECUTION_FAILURE);
+	}
+#endif
+    }
+  else
+    dirname = list->word->word;
+
+  /* When we get here, DIRNAME is the directory to change to.  If we
+     chdir successfully, just return. */
+  if (change_to_directory (dirname, no_symlinks, xattrflag))
+    {
+      if (lflag & LCD_PRINTPATH)
+	printf ("%s\n", dirname);
+      return (bindpwd (no_symlinks));
+    }
+
+  /* If the user requests it, then perhaps this is the name of
+     a shell variable, whose value contains the directory to
+     change to. */
+  if (lflag & LCD_DOVARS)
+    {
+      temp = get_string_value (dirname);
+      if (temp && change_to_directory (temp, no_symlinks, xattrflag))
+	{
+	  printf ("%s\n", temp);
+	  return (bindpwd (no_symlinks));
+	}
+    }
+
+  /* If the user requests it, try to find a directory name similar in
+     spelling to the one requested, in case the user made a simple
+     typo.  This is similar to the UNIX 8th and 9th Edition shells. */
+  if (lflag & LCD_DOSPELL)
+    {
+      temp = dirspell (dirname);
+      if (temp && change_to_directory (temp, no_symlinks, xattrflag))
+	{
+	  printf ("%s\n", temp);
+	  free (temp);
+	  return (bindpwd (no_symlinks));
+	}
+      else
+	FREE (temp);
+    }
+
+  e = errno;
+  temp = printable_filename (dirname, 0);
+  builtin_error ("%s: %s", temp, strerror (e));
+  if (temp != dirname)
+    free (temp);
+  return (EXECUTION_FAILURE);
 }
 
 $BUILTIN pwd
 $FUNCTION pwd_builtin
-$SHORT_DOC pwd
-Print the current working directory.
+$SHORT_DOC pwd [-LP]
+Print the name of the current working directory.
+
+Options:
+  -L	print the value of $PWD if it names the current working
+		directory
+  -P	print the physical directory, without any symbolic links
+
+By default, `pwd' behaves as if `-L' were specified.
+
+Exit Status:
+Returns 0 unless an invalid option is given or the current directory
+cannot be read.
 $END
 
-/* Non-zero means that pwd always give verbatim directory, regardless of
-   symbolic link following. */
+/* Non-zero means that pwd always prints the physical directory, without
+   symbolic links. */
 static int verbatim_pwd;
 
 /* Print the name of the current working directory. */
+int
 pwd_builtin (list)
      WORD_LIST *list;
 {
-  char *directory, *s;
+  char *directory;
+  int opt, pflag;
 
-#if 0
-  no_args (list);
-#else
   verbatim_pwd = no_symbolic_links;
-  if (list && (s = list->word->word) && s[0] == '-' && s[1] == 'P' && !s[2])
-    verbatim_pwd = 1;
-#endif
-
-  if (verbatim_pwd)
+  pflag = 0;
+  reset_internal_getopt ();
+  while ((opt = internal_getopt (list, "LP")) != -1)
     {
-      char *buffer = xmalloc (MAXPATHLEN);
-      directory = getwd (buffer);
-
-      if (!directory)
+      switch (opt)
 	{
-	  builtin_error ("%s", buffer);
-	  free (buffer);
+	case 'P':
+	  verbatim_pwd = pflag = 1;
+	  break;
+	case 'L':
+	  verbatim_pwd = 0;
+	  break;
+	CASE_HELPOPT;
+	default:
+	  builtin_usage ();
+	  return (EX_USAGE);
 	}
     }
-  else
-    directory = get_working_directory ("pwd");
+  list = loptend;
+
+#define tcwd the_current_working_directory
+
+  directory = tcwd ? (verbatim_pwd ? sh_physpath (tcwd, 0) : tcwd)
+		   : get_working_directory ("pwd");
+
+  /* Try again using getcwd() if canonicalization fails (for instance, if
+     the file system has changed state underneath bash). */
+  if ((tcwd && directory == 0) ||
+      (posixly_correct && same_file (".", tcwd, (struct stat *)0, (struct stat *)0) == 0))
+    {
+      if (directory && directory != tcwd)
+        free (directory);
+      directory = resetpwd ("pwd");
+    }
+
+#undef tcwd
 
   if (directory)
     {
+      opt = EXECUTION_SUCCESS;
       printf ("%s\n", directory);
-      fflush (stdout);
-      free (directory);
-      return (EXECUTION_SUCCESS);
+      /* This is dumb but posix-mandated. */
+      if (posixly_correct && pflag)
+	opt = setpwd (directory);
+      if (directory != the_current_working_directory)
+	free (directory);
+      return (sh_chkwrite (opt));
     }
   else
     return (EXECUTION_FAILURE);
 }
 
-$BUILTIN pushd
-$FUNCTION pushd_builtin
-$DEPENDS_ON PUSHD_AND_POPD
-$SHORT_DOC pushd [dir | +n | -n]
-Adds a directory to the top of the directory stack, or rotates
-the stack, making the new top of the stack the current working
-directory.  With no arguments, exchanges the top two directories.
-
-+n	Rotates the stack so that the Nth directory (counting
-	from the left of the list shown by `dirs') is at the top.
-
--n	Rotates the stack so that the Nth directory (counting
-	from the right) is at the top.
-
-dir	adds DIR to the directory stack at the top, making it the
-	new current working directory.
-
-You can see the directory stack with the `dirs' command.
-$END
-
-#if defined (PUSHD_AND_POPD)
-/* Some useful commands whose behaviour has been observed in Csh. */
-
-/* The list of remembered directories. */
-static char **pushd_directory_list = (char **)NULL;
-
-/* Number of existing slots in this list. */
-static int directory_list_size = 0;
-
-/* Offset to the end of the list. */
-static int directory_list_offset = 0;
-
-pushd_builtin (list)
-     WORD_LIST *list;
-{
-  char *temp, *current_directory;
-  int j = directory_list_offset - 1;
-  char direction = '+';
-
-  /* If there is no argument list then switch current and
-     top of list. */
-  if (!list)
-    {
-      if (!directory_list_offset)
-	{
-	  builtin_error ("No other directory");
-	  return (EXECUTION_FAILURE);
-	}
-
-      current_directory = get_working_directory ("pushd");
-      if (!current_directory)
-	return (EXECUTION_FAILURE);
-
-      temp = pushd_directory_list[j];
-      pushd_directory_list[j] = current_directory;
-      goto change_to_temp;
-    }
-  else
-    {
-      direction = *(list->word->word);
-      if (direction == '+' || direction == '-')
-	{
-	  int num;
-	  if (1 == sscanf (&(list->word->word)[1], "%d", &num))
-	    {
-	      if (direction == '-')
-		num = directory_list_offset - num;
-
-	      if (num > directory_list_offset || num < 0)
-		{
-		  if (!directory_list_offset)
-		    builtin_error ("Directory stack empty");
-		  else
-		    builtin_error ("Stack contains only %d directories",
-				    directory_list_offset + 1);
-		  return (EXECUTION_FAILURE);
-		}
-	      else
-		{
-		  /* Rotate the stack num times.  Remember, the
-		     current directory acts like it is part of the
-		     stack. */
-		  temp = get_working_directory ("pushd");
-
-		  if (!num)
-		    goto change_to_temp;
-
-		  do
-		    {
-		      char *top =
-			pushd_directory_list[directory_list_offset - 1];
-
-		      for (j = directory_list_offset - 2; j > -1; j--)
-			pushd_directory_list[j + 1] = pushd_directory_list[j];
-
-		      pushd_directory_list[j + 1] = temp;
-
-		      temp = top;
-		      num--;
-		    }
-		  while (num);
-
-		  temp = savestring (temp);
-		change_to_temp:
-		  {
-		    int tt = EXECUTION_FAILURE;
-
-		    if (temp)
-		      {
-			tt = cd_to_string (temp);
-			free (temp);
-		      }
-
-		    if ((tt == EXECUTION_SUCCESS))
-		      dirs_builtin ((WORD_LIST *)NULL);
-
-		    return (tt);
-		  }
-		}
-	    }
-	}
-
-      /* Change to the directory in list->word->word.  Save the current
-	 directory on the top of the stack. */
-      current_directory = get_working_directory ("pushd");
-      if (!current_directory)
-	return (EXECUTION_FAILURE);
-
-      if (cd_builtin (list) == EXECUTION_SUCCESS)
-	{
-	  if (directory_list_offset == directory_list_size)
-	    {
-	      pushd_directory_list = (char **)
-		xrealloc (pushd_directory_list,
-			  (directory_list_size += 10) * sizeof (char *));
-	    }
-	  pushd_directory_list[directory_list_offset++] = current_directory;
-
-	  dirs_builtin ((WORD_LIST *)NULL);
-
-	  return (EXECUTION_SUCCESS);
-	}
-      else
-	{
-	  free (current_directory);
-	  return (EXECUTION_FAILURE);
-	}
-    }
-}
-#endif /* PUSHD_AND_POPD */
-
-$BUILTIN dirs
-$FUNCTION dirs_builtin
-$DEPENDS_ON PUSHD_AND_POPD
-$SHORT_DOC dirs [-l]
-Display the list of currently remembered directories.  Directories
-find their way onto the list with the `pushd' command; you can get
-back up through the list with the `popd' command.
-
-The -l flag specifies that `dirs' should not print shorthand versions
-of directories which are relative to your home directory.  This means
-that `~/bin' might be displayed as `/homes/bfox/bin'.
-$END
-
-#if defined (PUSHD_AND_POPD)
-/* Print the current list of directories on the directory stack. */
-dirs_builtin (list)
-     WORD_LIST *list;
-{
-  int i, format, desired_index, index_flag;
-  char *temp, *w;
-
-  format = index_flag = 0;
-  desired_index = -1;
-  /* Maybe do long form or print specific dir stack entry? */
-  while (list)
-    {
-      if (strcmp (list->word->word, "-l") == 0)
-	{
-	  format++;
-	  list = list->next;
-	}
-      else if (*list->word->word == '+' && all_digits (list->word->word + 1))
-	{
-	  w = list->word->word + 1;
-	  index_flag = 1;
-	  i = atoi (w);
-	  /* dirs +0 prints the current working directory. */
-	  if (i == 0)
-	    desired_index = i;
-	  else if (i == directory_list_offset)
-	    {
-	      desired_index = 0;
-	      index_flag = 2;
-	    }
-	  else
-	    desired_index = directory_list_offset - i;
-	  list = list->next;
-	}
-      else if (*list->word->word == '-' && all_digits (list->word->word + 1))
-	{
-	  w = list->word->word + 1;
-	  i = atoi (w);
-	  index_flag = 2;
-	  /* dirs -X where X is directory_list_offset prints the current
-	     working directory. */
-	  if (i == directory_list_offset)
-	    {
-	      index_flag = 1;
-	      desired_index = 0;
-	    }
-	  else
-	    desired_index = i;
-	  list = list->next;
-	}
-      else
-	{
-	  bad_option (list->word->word);
-	  return (EXECUTION_FAILURE);
-	}
-    }
-
-  if (index_flag && (desired_index < 0 || desired_index > directory_list_offset))
-    {
-      if (directory_list_offset == 0)
-	builtin_error ("directory stack empty");
-      else
-	builtin_error ("%s: bad directory stack index", w);
-      return (EXECUTION_FAILURE);
-    }
-
-  /* The first directory printed is always the current working directory. */
-  if (!index_flag || (index_flag == 1 && desired_index == 0))
-    {
-      temp = get_working_directory ("dirs");
-      if (!temp)
-	temp = savestring ("<no directory>");
-      printf ("%s", format ? temp : polite_directory_format (temp));
-      free (temp);
-      if (index_flag)
-	{
-	  putchar ('\n');
-	  return EXECUTION_SUCCESS;
-	}
-    }
-
-#define DIRSTACK_ENTRY(i) \
-	format ? pushd_directory_list[i] \
-	       : polite_directory_format (pushd_directory_list[i])
-
-  /* Now print the requested directory stack entries. */
-  if (index_flag)
-    printf ("%s", DIRSTACK_ENTRY (desired_index));
-  else
-    for (i = (directory_list_offset - 1); i > -1; i--)
-      printf (" %s", DIRSTACK_ENTRY (i));
-
-  putchar ('\n');
-  fflush (stdout);
-  return (EXECUTION_SUCCESS);
-}
-#endif /* PUSHD_AND_POPD */
-
-$BUILTIN popd
-$FUNCTION popd_builtin
-$DEPENDS_ON PUSHD_AND_POPD
-$SHORT_DOC popd [+n | -n]
-Removes entries from the directory stack.  With no arguments,
-removes the top directory from the stack, and cd's to the new
-top directory.
-
-+n	removes the Nth entry counting from the left of the list
-	shown by `dirs', starting with zero.  For example: `popd +0'
-	removes the first directory, `popd +1' the second.
-
--n	removes the Nth entry counting from the right of the list
-	shown by `dirs', starting with zero.  For example: `popd -0'
-	removes the last directory, `popd -1' the next to last.
-
-You can see the directory stack with the `dirs' command.
-$END
-
-#if defined (PUSHD_AND_POPD)
-/* Pop the directory stack, and then change to the new top of the stack.
-   If LIST is non-null it should consist of a word +N or -N, which says
-   what element to delete from the stack.  The default is the top one. */
-popd_builtin (list)
-     WORD_LIST *list;
-{
-  register int i;
-  int which = 0;
-  char direction = '+';
-
-  if (list)
-    {
-      direction = *(list->word->word);
-
-      if ((direction != '+' && direction != '-') ||
-	  (1 != sscanf (&((list->word->word)[1]), "%d", &which)))
-	{
-	  builtin_error ("bad arg `%s'", list->word->word);
-	  return (EXECUTION_FAILURE);
-	}
-    }
-
-  if (which > directory_list_offset || (!directory_list_offset && !which))
-    {
-      if (!directory_list_offset)
-	builtin_error ("Directory stack empty");
-      else
-	builtin_error ("Stack contains only %d directories",
-			directory_list_offset + 1);
-      return (EXECUTION_FAILURE);
-    }
-
-  /* Handle case of no specification, or top of stack specification. */
-  if ((direction == '+' && which == 0) ||
-      (direction == '-' && which == directory_list_offset))
-    {
-      i = cd_to_string (pushd_directory_list[directory_list_offset - 1]);
-      if (i != EXECUTION_SUCCESS)
-	return (i);
-      free (pushd_directory_list[--directory_list_offset]);
-    }
-  else
-    {
-      /* Since an offset other than the top directory was specified,
-	 remove that directory from the list and shift the remainder
-	 of the list into place. */
-
-      if (direction == '+')
-	i = directory_list_offset - which;
-      else
-	i = which;
-
-      free (pushd_directory_list[i]);
-      directory_list_offset--;
-
-      /* Shift the remainder of the list into place. */
-      for (; i < directory_list_offset; i++)
-	pushd_directory_list[i] = pushd_directory_list[i + 1];
-    }
-
-  dirs_builtin ((WORD_LIST *)NULL);
-
-  return (EXECUTION_SUCCESS);
-}
-#endif /* PUSHD_AND_POPD */
-
 /* Do the work of changing to the directory NEWDIR.  Handle symbolic
-   link following, etc. */
+   link following, etc.  This function *must* return with
+   the_current_working_directory either set to NULL (in which case
+   getcwd() will eventually be called), or set to a string corresponding
+   to the working directory.  Return 1 on success, 0 on failure. */
 
 static int
-change_to_directory (newdir)
+change_to_directory (newdir, nolinks, xattr)
      char *newdir;
+     int nolinks, xattr;
 {
-  char *t;
+  char *t, *tdir, *ndir;
+  int err, canon_failed, r, ndlen, dlen;
 
-  if (!no_symbolic_links)
+  tdir = (char *)NULL;
+
+  if (the_current_working_directory == 0)
     {
-      int chdir_return = 0;
-      char *tdir = (char *)NULL;
+      t = get_working_directory ("chdir");
+      FREE (t);
+    }
 
-      if (!the_current_working_directory)
+  t = make_absolute (newdir, the_current_working_directory);
+
+  /* TDIR is either the canonicalized absolute pathname of NEWDIR
+     (nolinks == 0) or the absolute physical pathname of NEWDIR
+     (nolinks != 0). */
+  tdir = nolinks ? sh_physpath (t, 0)
+		 : sh_canonpath (t, PATH_CHECKDOTDOT|PATH_CHECKEXISTS);
+
+  ndlen = strlen (newdir);
+  dlen = strlen (t);
+
+  /* Use the canonicalized version of NEWDIR, or, if canonicalization
+     failed, use the non-canonical form. */
+  canon_failed = 0;
+  if (tdir && *tdir)
+    free (t);
+  else
+    {
+      FREE (tdir);
+      tdir = t;
+      canon_failed = 1;
+    }
+
+  /* In POSIX mode, if we're resolving symlinks logically and sh_canonpath
+     returns NULL (because it checks the path, it will return NULL if the
+     resolved path doesn't exist), fail immediately. */
+  if (posixly_correct && nolinks == 0 && canon_failed && (errno != ENAMETOOLONG || ndlen > PATH_MAX))
+    {
+#if defined ENAMETOOLONG
+      if (errno != ENOENT && errno != ENAMETOOLONG)
+#else
+      if (errno != ENOENT)
+#endif
+	errno = ENOTDIR;
+      free (tdir);
+      return (0);
+    }
+
+#if defined (O_XATTR)
+  if (xattrflag)
+    {
+      r = cdxattr (nolinks ? newdir : tdir, &ndir);
+      if (r >= 0)
 	{
-	  t = get_working_directory ("cd_links");
-	  FREE (t);
-	}
-
-      if (the_current_working_directory)
-	t = make_absolute (newdir, the_current_working_directory);
-      else
-	t = savestring (newdir);
-
-      /* TDIR is the canonicalized absolute pathname of the NEWDIR. */
-      tdir = canonicalize_pathname (t);
-
-      /* Use the canonicalized version of NEWDIR, or, if canonicalization
-	 failed, use the non-canonical form. */
-      if (tdir && *tdir)
-	free (t);
-      else
-	{
-	  FREE (tdir);
-
-	  tdir = t;
-	}
-
-      if (chdir (tdir) < 0)
-	{
-	  int err;
-
-	  chdir_return = 0;
+	  canon_failed = 0;
 	  free (tdir);
-
-	  err = errno;
-
-	  /* We failed changing to the canonicalized directory name.  Try
-	     what the user passed verbatim.  If we succeed, reinitialize
-	     the_current_working_directory. */
-	  if (chdir (newdir) == 0)
-	    {
-	      chdir_return = 1;
-	      if (the_current_working_directory)
-		{
-		  free (the_current_working_directory);
-		  the_current_working_directory = (char *)NULL;
-		}
-
-	      tdir = get_working_directory ("cd");
-	      FREE (tdir);
-	    }
-	  else
-	    errno = err;
+	  tdir = ndir;
 	}
       else
 	{
-	  chdir_return = 1;
-
-	  FREE (the_current_working_directory);
-	  the_current_working_directory = tdir;
+	  err = errno;
+	  free (tdir);
+	  errno = err;
+	  return (0);		/* no xattr */
 	}
+    }
+  else
+#endif
+    {
+      r = chdir (nolinks ? newdir : tdir);
+      if (r >= 0)
+	resetxattr ();
+    }
 
-      return (chdir_return);
+  /* If the chdir succeeds, update the_current_working_directory. */
+  if (r == 0)
+    {
+      /* If canonicalization failed, but the chdir succeeded, reset the
+	 shell's idea of the_current_working_directory. */
+      if (canon_failed)
+	{
+	  t = resetpwd ("cd");
+	  if (t == 0)
+	    set_working_directory (tdir);
+	  else
+	    free (t);
+	}
+      else
+	set_working_directory (tdir);
+
+      free (tdir);
+      return (1);
+    }
+
+  /* We failed to change to the appropriate directory name.  If we tried
+     what the user passed (nolinks != 0), punt now. */
+  if (nolinks)
+    {
+      free (tdir);
+      return (0);
+    }
+
+  err = errno;
+
+  /* We're not in physical mode (nolinks == 0), but we failed to change to
+     the canonicalized directory name (TDIR).  Try what the user passed
+     verbatim. If we succeed, reinitialize the_current_working_directory. */
+  if (chdir (newdir) == 0)
+    {
+      t = resetpwd ("cd");
+      if (t == 0)
+	set_working_directory (tdir);
+      else
+	free (t);
+
+      r = 1;
     }
   else
     {
-      if (chdir (newdir) < 0)
-	return (0);
-      else
-	return (1);
+      errno = err;
+      r = 0;
     }
-}
 
-/* Switch to the directory in NAME.  This uses the cd_builtin to do the work,
-   so if the result is EXECUTION_FAILURE then an error message has already
-   been printed. */
-static int
-cd_to_string (name)
-     char *name;
-{
-  WORD_LIST *tlist = make_word_list (make_word (name), NULL);
-  int result = (cd_builtin (tlist));
-  dispose_words (tlist);
-  return (result);
+  free (tdir);
+  return r;
 }

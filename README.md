@@ -32,3 +32,7 @@ developed by [Jutta Albrecht](https://sourceforge.net/u/bithexe/profile/)
 
     `$ cmake --build $BUILD_DIR --target bash`
 
+### 更新记录
+
+* 2023-05-17:
+[bash-4.4](https://github.com/gitGNU/gnu_bash/releases/tag/bash-4.4)

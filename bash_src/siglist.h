@@ -1,40 +1,44 @@
 /* siglist.h -- encapsulate various definitions for sys_siglist */
 
-/* Copyright (C) 1993 Free Software Foundation, Inc.
+/* Copyright (C) 1993, 2001, 2005, 2008,2009 Free Software Foundation, Inc.
 
    This file is part of GNU Bash, the Bourne Again SHell.
 
-   Bash is free software; you can redistribute it and/or modify it under
-   the terms of the GNU General Public License as published by the Free
-   Software Foundation; either version 2, or (at your option) any later
-   version.
+   Bash is free software: you can redistribute it and/or modify
+   it under the terms of the GNU General Public License as published by
+   the Free Software Foundation, either version 3 of the License, or
+   (at your option) any later version.
 
-   Bash is distributed in the hope that it will be useful, but WITHOUT ANY
-   WARRANTY; without even the implied warranty of MERCHANTABILITY or
-   FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
-   for more details.
+   Bash is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU General Public License for more details.
 
-   You should have received a copy of the GNU General Public License along
-   with Bash; see the file COPYING.  If not, write to the Free Software
-   Foundation, 675 Mass Ave, Cambridge, MA 02139, USA. */
+   You should have received a copy of the GNU General Public License
+   along with Bash.  If not, see <http://www.gnu.org/licenses/>.
+*/
 
 #if !defined (_SIGLIST_H_)
 #define _SIGLIST_H_
 
-#if defined (Solaris) || defined (USGr4_2) || defined (drs6000) || defined (amiga) || defined (Minix)
-#  if !defined (sys_siglist)
-#    define sys_siglist _sys_siglist
-#  endif /* !sys_siglist */
-#endif /* Solaris || USGr4_2 || drs6000 || amiga || Minix */
+#if !defined (SYS_SIGLIST_DECLARED) && !defined (HAVE_STRSIGNAL)
 
-#if !defined (Solaris) && !defined (Linux) && !defined (__BSD_4_4__) && \
-	!defined (Minix) && !defined (NetBSD) && !defined (FreeBSD) && \
-	!defined (__linux__)
+#if defined (HAVE_UNDER_SYS_SIGLIST) && !defined (HAVE_SYS_SIGLIST) && !defined (sys_siglist)
+#  define sys_siglist _sys_siglist
+#endif /* HAVE_UNDER_SYS_SIGLIST && !HAVE_SYS_SIGLIST && !sys_siglist */
+
+#if !defined (sys_siglist)
 extern char *sys_siglist[];
-#endif /* !Solaris && !Linux && !__BSD_4_4__ && !Minix && !NetBSD && !FreeBSD */
+#endif /* !sys_siglist */
 
-#if !defined (strsignal) && !defined (Solaris)
+#endif /* !SYS_SIGLIST_DECLARED && !HAVE_STRSIGNAL */
+
+#if !defined (strsignal) && !defined (HAVE_STRSIGNAL)
 #  define strsignal(sig) (char *)sys_siglist[sig]
-#endif /* !strsignal */
+#endif /* !strsignal && !HAVE_STRSIGNAL */
+
+#if !defined (strsignal) && !HAVE_DECL_STRSIGNAL
+extern char *strsignal __P((int));
+#endif
 
 #endif /* _SIGLIST_H */

@@ -1,2 +1,2 @@
-../bash < ./input-line.sh > xx
-diff xx input.right && rm -f xx
+${THIS_SH} < ./input-line.sh > ${BASH_TSTOUT}
+diff ${BASH_TSTOUT} input.right && rm -f ${BASH_TSTOUT}

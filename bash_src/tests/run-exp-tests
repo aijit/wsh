@@ -1,2 +1,2 @@
-../bash ./exp-tests | grep -v '^expect' > xx
-diff xx exp.right && rm -f xx
+${THIS_SH} ./exp.tests 2>&1 | grep -v '^expect' > ${BASH_TSTOUT}
+diff ${BASH_TSTOUT} exp.right && rm -f ${BASH_TSTOUT}

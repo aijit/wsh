@@ -1,62 +1,169 @@
 /* input.c -- functions to perform buffered input with synchronization. */
 
-/* Copyright (C) 1992 Free Software Foundation, Inc.
+/* Copyright (C) 1992-2009 Free Software Foundation, Inc.
 
    This file is part of GNU Bash, the Bourne Again SHell.
 
-   Bash is free software; you can redistribute it and/or modify it under
-   the terms of the GNU General Public License as published by the Free
-   Software Foundation; either version 2, or (at your option) any later
-   version.
+   Bash is free software: you can redistribute it and/or modify
+   it under the terms of the GNU General Public License as published by
+   the Free Software Foundation, either version 3 of the License, or
+   (at your option) any later version.
 
-   Bash is distributed in the hope that it will be useful, but WITHOUT ANY
-   WARRANTY; without even the implied warranty of MERCHANTABILITY or
-   FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
-   for more details.
+   Bash is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU General Public License for more details.
 
-   You should have received a copy of the GNU General Public License along
-   with Bash; see the file COPYING.  If not, write to the Free Software
-   Foundation, 675 Mass Ave, Cambridge, MA 02139, USA. */
+   You should have received a copy of the GNU General Public License
+   along with Bash.  If not, see <http://www.gnu.org/licenses/>.
+*/
 
-/* similar to stdio, but input-only. */
+#include "config.h"
 
 #include "bashtypes.h"
-#include <sys/file.h>
+#if !defined (_MINIX) && defined (HAVE_SYS_FILE_H)
+#  include <sys/file.h>
+#endif
+#include "filecntl.h"
 #include "posixstat.h"
 #include <stdio.h>
 #include <errno.h>
-#include "filecntl.h"
+
+#if defined (HAVE_UNISTD_H)
+#  include <unistd.h>
+#endif
 
 #include "bashansi.h"
-#include "config.h"
+#include "bashintl.h"
+
 #include "command.h"
 #include "general.h"
 #include "input.h"
+#include "error.h"
+#include "externs.h"
+#include "quit.h"
+#include "trap.h"
 
 #if !defined (errno)
 extern int errno;
 #endif /* !errno */
 
-#define MAX_INPUT_BUFFER_SIZE	8192
+#if defined (EAGAIN)
+#  define X_EAGAIN EAGAIN
+#else
+#  define X_EAGAIN -99
+#endif
+
+#if defined (EWOULDBLOCK)
+#  define X_EWOULDBLOCK EWOULDBLOCK
+#else
+#  define X_EWOULDBLOCK -99
+#endif
+
+extern void termsig_handler __P((int));
+
+/* Functions to handle reading input on systems that don't restart read(2)
+   if a signal is received. */
+
+static char localbuf[128];
+static int local_index = 0, local_bufused = 0;
+
+/* Posix and USG systems do not guarantee to restart read () if it is
+   interrupted by a signal.  We do the read ourselves, and restart it
+   if it returns EINTR. */
+int
+getc_with_restart (stream)
+     FILE *stream;
+{
+  unsigned char uc;
+
+  CHECK_TERMSIG;
+
+  /* Try local buffering to reduce the number of read(2) calls. */
+  if (local_index == local_bufused || local_bufused == 0)
+    {
+      while (1)
+	{
+	  QUIT;
+	  run_pending_traps ();
+
+	  local_bufused = read (fileno (stream), localbuf, sizeof(localbuf));
+	  if (local_bufused > 0)
+	    break;
+	  else if (local_bufused == 0)
+	    {
+	      local_index = 0;
+	      return EOF;
+	    }
+	  else if (errno == X_EAGAIN || errno == X_EWOULDBLOCK)
+	    {
+	      if (sh_unset_nodelay_mode (fileno (stream)) < 0)
+		{
+		  sys_error (_("cannot reset nodelay mode for fd %d"), fileno (stream));
+		  local_index = local_bufused = 0;
+		  return EOF;
+		}
+	      continue;
+	    }
+	  else if (errno != EINTR)
+	    {
+	      local_index = local_bufused = 0;
+	      return EOF;
+	    }
+	  else if (interrupt_state || terminating_signal)	/* QUIT; */
+	    local_index = local_bufused = 0;
+	}
+      local_index = 0;
+    }
+  uc = localbuf[local_index++];
+  return uc;
+}
+
+int
+ungetc_with_restart (c, stream)
+     int c;
+     FILE *stream;
+{
+  if (local_index == 0 || c == EOF)
+    return EOF;
+  localbuf[--local_index] = c;
+  return c;
+}
+
+#if defined (BUFFERED_INPUT)
+
+/* A facility similar to stdio, but input-only. */
+
+#if defined (USING_BASH_MALLOC)
+#  define MAX_INPUT_BUFFER_SIZE	8176
+#else
+#  define MAX_INPUT_BUFFER_SIZE	8192
+#endif
 
 #if !defined (SEEK_CUR)
 #  define SEEK_CUR 1
 #endif /* !SEEK_CUR */
 
-void free_buffered_stream ();
+#ifdef max
+#  undef max
+#endif
+#define max(a, b)	(((a) > (b)) ? (a) : (b))
+#ifdef min
+#  undef min
+#endif
+#define min(a, b)	((a) > (b) ? (b) : (a))
 
 extern int interactive_shell;
 
 int bash_input_fd_changed;
+
 /* This provides a way to map from a file descriptor to the buffer
    associated with that file descriptor, rather than just the other
    way around.  This is needed so that buffers are managed properly
    in constructs like 3<&4.  buffers[x]->b_fd == x -- that is how the
    correspondence is maintained. */
-BUFFERED_STREAM **buffers = (BUFFERED_STREAM **)NULL;
-static int nbuffers = 0;
-
-#define max(a, b)  (((a) > (b)) ? (a) : (b))
+static BUFFERED_STREAM **buffers = (BUFFERED_STREAM **)NULL;
+static int nbuffers;
 
 #define ALLOCATE_BUFFERS(n) \
 	do { if ((n) >= nbuffers) allocate_buffers (n); } while (0)
@@ -84,7 +191,7 @@ static BUFFERED_STREAM *
 make_buffered_stream (fd, buffer, bufsize)
      int fd;
      char *buffer;
-     int bufsize;
+     size_t bufsize;
 {
   BUFFERED_STREAM *bp;
 
@@ -94,11 +201,11 @@ make_buffered_stream (fd, buffer, bufsize)
   bp->b_fd = fd;
   bp->b_buffer = buffer;
   bp->b_size = bufsize;
-  bp->b_used = 0;
-  bp->b_inputp = 0;
-  bp->b_flag = 0;
+  bp->b_used = bp->b_inputp = bp->b_flag = 0;
   if (bufsize == 1)
     bp->b_flag |= B_UNBUFF;
+  if (O_TEXT && (fcntl (fd, F_GETFL) & O_TEXT) != 0)
+    bp->b_flag |= B_TEXT;
   return (bp);
 }
 
@@ -117,9 +224,84 @@ copy_buffered_stream (bp)
   return (nbp);
 }
 
-#ifdef __NT_VC__
-struct stat dummy_stat_buf ;
-#endif
+int
+set_bash_input_fd (fd)
+     int fd;
+{
+  if (bash_input.type == st_bstream)
+    bash_input.location.buffered_fd = fd;
+  else if (interactive_shell == 0)
+    default_buffered_input = fd;
+  return 0;
+}
+
+int
+fd_is_bash_input (fd)
+     int fd;
+{
+  if (bash_input.type == st_bstream && bash_input.location.buffered_fd == fd)
+    return 1;
+  else if (interactive_shell == 0 && default_buffered_input == fd)
+    return 1;
+  return 0;
+}
+
+/* Save the buffered stream corresponding to file descriptor FD (which bash
+   is using to read input) to a buffered stream associated with NEW_FD.  If
+   NEW_FD is -1, a new file descriptor is allocated with fcntl.  The new
+   file descriptor is returned on success, -1 on error. */
+int
+save_bash_input (fd, new_fd)
+     int fd, new_fd;
+{
+  int nfd;
+
+  /* Sync the stream so we can re-read from the new file descriptor.  We
+     might be able to avoid this by copying the buffered stream verbatim
+     to the new file descriptor. */
+  if (buffers[fd])
+    sync_buffered_stream (fd);
+
+  /* Now take care of duplicating the file descriptor that bash is
+     using for input, so we can reinitialize it later. */
+  nfd = (new_fd == -1) ? fcntl (fd, F_DUPFD, 10) : new_fd;
+  if (nfd == -1)
+    {
+      if (fcntl (fd, F_GETFD, 0) == 0)
+	sys_error (_("cannot allocate new file descriptor for bash input from fd %d"), fd);
+      return -1;
+    }
+
+  if (nfd < nbuffers && buffers[nfd])
+    {
+      /* What's this?  A stray buffer without an associated open file
+	 descriptor?  Free up the buffer and report the error. */
+      internal_error (_("save_bash_input: buffer already exists for new fd %d"), nfd);
+      free_buffered_stream (buffers[nfd]);
+    }
+
+  /* Reinitialize bash_input.location. */
+  if (bash_input.type == st_bstream)
+    {
+      bash_input.location.buffered_fd = nfd;
+      fd_to_buffered_stream (nfd);
+      close_buffered_fd (fd);	/* XXX */
+    }
+  else
+    /* If the current input type is not a buffered stream, but the shell
+       is not interactive and therefore using a buffered stream to read
+       input (e.g. with an `eval exec 3>output' inside a script), note
+       that the input fd has been changed.  pop_stream() looks at this
+       value and adjusts the input fd to the new value of
+       default_buffered_input accordingly. */
+    bash_input_fd_changed++;
+
+  if (default_buffered_input == fd)
+    default_buffered_input = nfd;
+
+  SET_CLOSE_ON_EXEC (nfd);
+  return nfd;
+}
 
 /* Check that file descriptor FD is not the one that bash is currently
    using to read input from a script.  FD is about to be duplicated onto,
@@ -127,73 +309,21 @@ struct stat dummy_stat_buf ;
    input file descriptor, we need to seek backwards in the script (if
    possible and necessary -- scripts read from stdin are still unbuffered),
    allocate a new file descriptor to use for bash input, and re-initialize
-   the buffered stream. */
-
+   the buffered stream.  Make sure the file descriptor used to save bash
+   input is set close-on-exec. Returns 0 on success, -1 on failure.  This
+   works only if fd is > 0 -- if fd == 0 and bash is reading input from
+   fd 0, sync_buffered_stream is used instead, to cooperate with input
+   redirection (look at redir.c:add_undo_redirect()). */
 int
 check_bash_input (fd)
      int fd;
 {
-  int nfd;
-
-  if (fd > 0 && ((bash_input.type == st_bstream && bash_input.location.buffered_fd == fd) ||
-  		 (interactive_shell == 0 && default_buffered_input == fd)))
+  if (fd_is_bash_input (fd))
     {
-      /* Sync the stream so we can re-read from the new file descriptor.  We
-	 might be able to avoid this by copying the buffered stream verbatim
-	 to the new file descriptor. */
-      if (buffers[fd])
-	sync_buffered_stream (fd);
-
-      /* Now take care of duplicating the file descriptor that bash is
-	 using for input, so we can reinitialize it later. */
-/*
-#ifdef HAVE_DUP2
-      nfd = dup2(fd,10);
-#else
-
-      nfd = fcntl (fd, F_DUPFD, 10);
- #endif */
-      DUP(nfd, fd);
-
-      if (nfd == -1)
-	{
-#ifdef __NT_VC__
-	  if (fstat (fd, &dummy_stat_buf) == 0)
-#else
-	  if (fcntl (fd, F_GETFD, 0) == 0)
-#endif
-	    report_error
-	      ("cannot allocate new file descriptor for bash input from fd %d: %s",
-		fd, strerror (errno));
-	  return -1;
-	}
-
-      if (buffers[nfd])
-	{
-	  /* What's this?  A stray buffer without an associated open file
-	     descriptor?  Free up the buffer and report the error. */
-	  report_error ("check_bash_input: buffer already exists for new fd %d", nfd);
-	  free_buffered_stream (buffers[nfd]);
-	}
-
-      /* Reinitialize bash_input.location. */
-      if (bash_input.type == st_bstream)
-	{
-	  bash_input.location.buffered_fd = nfd;
-	  fd_to_buffered_stream (nfd);
-	  close_buffered_fd (fd);	/* XXX */
-	}
-      else
-	/* If the current input type is not a buffered stream, but the shell
-	   is not interactive and therefore using a buffered stream to read
-	   input (e.g. with an `eval exec 3>output' inside a script), note
-	   that the input fd has been changed.  pop_stream() looks at this
-	   value and adjusts the input fd to the new value of
-	   default_buffered_input accordingly. */
-	bash_input_fd_changed++;
-
-      if (default_buffered_input == fd)
-	default_buffered_input = nfd;
+      if (fd > 0)
+	return ((save_bash_input (fd, -1) == -1) ? -1 : 0);
+      else if (fd == 0)
+        return ((sync_buffered_stream (fd) == -1) ? -1 : 0);
     }
   return 0;
 }
@@ -202,6 +332,7 @@ check_bash_input (fd)
    BUFFERED_STREAM corresponding to fd2 is deallocated, if one exists.
    BUFFERS[fd1] is copied to BUFFERS[fd2].  This is called by the
    redirect code for constructs like 4<&0 and 3</etc/rc.local. */
+int
 duplicate_buffered_stream (fd1, fd2)
      int fd1, fd2;
 {
@@ -221,7 +352,13 @@ duplicate_buffered_stream (fd1, fd2)
 		  (bash_input.location.buffered_fd == fd2);
 
   if (buffers[fd2])
-    free_buffered_stream (buffers[fd2]);
+    {
+      /* If the two objects share the same b_buffer, don't free it. */
+      if (buffers[fd1] && buffers[fd1]->b_buffer && buffers[fd1]->b_buffer == buffers[fd2]->b_buffer)
+	buffers[fd2] = (BUFFERED_STREAM *)NULL;
+      else
+	free_buffered_stream (buffers[fd2]);
+    }
   buffers[fd2] = copy_buffered_stream (buffers[fd1]);
   if (buffers[fd2])
     buffers[fd2]->b_fd = fd2;
@@ -230,7 +367,9 @@ duplicate_buffered_stream (fd1, fd2)
     {
       if (!buffers[fd2])
 	fd_to_buffered_stream (fd2);
+      buffers[fd2]->b_flag |= B_WASBASHINPUT;
     }
+
   return (fd2);
 }
 
@@ -245,7 +384,7 @@ fd_to_buffered_stream (fd)
      int fd;
 {
   char *buffer;
-  int size;
+  size_t size;
   struct stat sb;
 
   if (fstat (fd, &sb) < 0)
@@ -254,17 +393,9 @@ fd_to_buffered_stream (fd)
       return ((BUFFERED_STREAM *)NULL);
     }
 
-  if (fd_is_seekable (fd) == 0)
+  size = (fd_is_seekable (fd)) ? min (sb.st_size, MAX_INPUT_BUFFER_SIZE) : 1;
+  if (size == 0)
     size = 1;
-  else
-    size = (sb.st_size > MAX_INPUT_BUFFER_SIZE) ? MAX_INPUT_BUFFER_SIZE
-						: sb.st_size;
-      
-  if (0 == size) /* joerg: sb.st_size seems to be 0 when reading from stdin */
-  {
-     size = MAX_INPUT_BUFFER_SIZE;
-  }
-
   buffer = (char *)xmalloc (size);
 
   return (make_buffered_stream (fd, buffer, size));
@@ -277,10 +408,8 @@ open_buffered_stream (file)
 {
   int fd;
 
-  fd = OPEN (file, O_RDONLY);
-  if (fd == -1)
-    return ((BUFFERED_STREAM *)NULL);
-  return (fd_to_buffered_stream (fd));
+  fd = open (file, O_RDONLY);
+  return ((fd >= 0) ? fd_to_buffered_stream (fd) : (BUFFERED_STREAM *)NULL);
 }
 
 /* Deallocate a buffered stream and free up its resources.  Make sure we
@@ -313,8 +442,7 @@ close_buffered_stream (bp)
     return (0);
   fd = bp->b_fd;
   free_buffered_stream (bp);
-  CLOSE(fd);
-  return (0);
+  return (close (fd));
 }
 
 /* Deallocate the buffered stream associated with file descriptor FD, and
@@ -323,12 +451,28 @@ int
 close_buffered_fd (fd)
      int fd;
 {
+  if (fd < 0)
+    {
+      errno = EBADF;
+      return -1;
+    }
   if (fd >= nbuffers || !buffers || !buffers[fd])
-  {
-     CLOSE(fd);
-    return (0);
-  }
+    return (close (fd));
   return (close_buffered_stream (buffers[fd]));
+}
+
+/* Make the BUFFERED_STREAM associated with buffers[FD] be BP, and return
+   the old BUFFERED_STREAM. */
+BUFFERED_STREAM *
+set_buffered_stream (fd, bp)
+     int fd;
+     BUFFERED_STREAM *bp;
+{
+  BUFFERED_STREAM *ret;
+
+  ret = buffers[fd];
+  buffers[fd] = bp;
+  return ret;
 }
 
 /* Read a buffer full of characters from BP, a buffered stream. */
@@ -336,28 +480,41 @@ static int
 b_fill_buffer (bp)
      BUFFERED_STREAM *bp;
 {
-  do
-  {
-     bp->b_used = READ (bp->b_fd, bp->b_buffer, bp->b_size);
-  }
+  ssize_t nr;
+  off_t o;
 
-  while (bp->b_used < 0 && errno == EINTR);
+  CHECK_TERMSIG;
+  /* In an environment where text and binary files are treated differently,
+     compensate for lseek() on text files returning an offset different from
+     the count of characters read() returns.  Text-mode streams have to be
+     treated as unbuffered. */
+  if ((bp->b_flag & (B_TEXT | B_UNBUFF)) == B_TEXT)
+    {
+      o = lseek (bp->b_fd, 0, SEEK_CUR);
+      nr = zread (bp->b_fd, bp->b_buffer, bp->b_size);
+      if (nr > 0 && nr < lseek (bp->b_fd, 0, SEEK_CUR) - o)
+	{
+	  lseek (bp->b_fd, o, SEEK_SET);
+	  bp->b_flag |= B_UNBUFF;
+	  bp->b_size = 1;
+	  nr = zread (bp->b_fd, bp->b_buffer, bp->b_size);
+	}
+    }
+  else
+    nr = zread (bp->b_fd, bp->b_buffer, bp->b_size);
+  if (nr <= 0)
+    {
+      bp->b_used = 0;
+      bp->b_buffer[0] = 0;
+      if (nr == 0)
+	bp->b_flag |= B_EOF;
+      else
+	bp->b_flag |= B_ERROR;
+      return (EOF);
+    }
 
-  if (bp->b_used <= 0)
-  {
-     bp->b_buffer[0] = 0;
-     if (bp->b_used == 0)
-     {
-        bp->b_flag |= B_EOF;
-     }
-     else
-     {
-        bp->b_flag |= B_ERROR;
-     }
-     return (EOF);
-  }
+  bp->b_used = nr;
   bp->b_inputp = 0;
-
   return (bp->b_buffer[bp->b_inputp++] & 0xFF);
 }
 
@@ -387,11 +544,11 @@ sync_buffered_stream (bfd)
      int bfd;
 {
   BUFFERED_STREAM *bp;
-  int chars_left;
+  off_t chars_left;
 
-  bp = buffers[bfd];
-  if (!bp)
+  if (buffers == 0 || (bp = buffers[bfd]) == 0)
     return (-1);
+
   chars_left = bp->b_used - bp->b_inputp;
   if (chars_left)
     lseek (bp->b_fd, -chars_left, SEEK_CUR);
@@ -402,7 +559,17 @@ sync_buffered_stream (bfd)
 int
 buffered_getchar ()
 {
+  CHECK_TERMSIG;
+
+#if !defined (DJGPP)
   return (bufstream_getc (buffers[bash_input.location.buffered_fd]));
+#else
+  /* On DJGPP, ignore \r. */
+  int ch;
+  while ((ch = bufstream_getc (buffers[bash_input.location.buffered_fd])) == '\r')
+    ;
+  return ch;
+#endif
 }
 
 int
@@ -419,31 +586,32 @@ with_input_from_buffered_stream (bfd, name)
      char *name;
 {
   INPUT_STREAM location;
+  BUFFERED_STREAM *bp;
 
   location.buffered_fd = bfd;
   /* Make sure the buffered stream exists. */
-  fd_to_buffered_stream (bfd);
-  init_yy_io (buffered_getchar, buffered_ungetchar, st_bstream, name, location);
+  bp = fd_to_buffered_stream (bfd);
+  init_yy_io (bp == 0 ? return_EOF : buffered_getchar,
+	      buffered_ungetchar, st_bstream, name, location);
 }
 
 #if defined (TEST)
-
-char *
+void *
 xmalloc(s)
 int s;
 {
-	return ((char *)malloc (s));
+	return (malloc (s));
 }
 
-char *
+void *
 xrealloc(s, size)
 char	*s;
 int	size;
 {
 	if (!s)
-		return((char *)malloc (size));
+		return(malloc (size));
 	else
-		return((char *)realloc (s, size));
+		return(realloc (s, size));
 }
 
 void
@@ -494,4 +662,5 @@ char	**argv;
 	}
 	exit(0);
 }
-#endif
+#endif /* TEST */
+#endif /* BUFFERED_INPUT */

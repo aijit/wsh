@@ -1,2 +1,2 @@
-../bash ./precedence > xx
-diff xx prec.right && rm -f xx
+${THIS_SH} ./precedence > ${BASH_TSTOUT}
+diff ${BASH_TSTOUT} prec.right && rm -f ${BASH_TSTOUT}

@@ -1,154 +1,239 @@
-/* execute_command.c -- Execute a COMMAND structure. */
+/* execute_cmd.c -- Execute a COMMAND structure. */
 
-/* Copyright (C) 1987,1991 Free Software Foundation, Inc.
+/* Copyright (C) 1987-2016 Free Software Foundation, Inc.
 
    This file is part of GNU Bash, the Bourne Again SHell.
 
-   Bash is free software; you can redistribute it and/or modify it
-   under the terms of the GNU General Public License as published by
-   the Free Software Foundation; either version 1, or (at your option)
-   any later version.
+   Bash is free software: you can redistribute it and/or modify
+   it under the terms of the GNU General Public License as published by
+   the Free Software Foundation, either version 3 of the License, or
+   (at your option) any later version.
 
-   Bash is distributed in the hope that it will be useful, but WITHOUT
-   ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
-   or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public
-   License for more details.
+   Bash is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU General Public License for more details.
 
    You should have received a copy of the GNU General Public License
-   along with Bash; see the file COPYING.  If not, write to the Free
-   Software Foundation, 675 Mass Ave, Cambridge, MA 02139, USA. */
-#if defined (AIX) && defined (RISC6000) && !defined (__GNUC__)
+   along with Bash.  If not, see <http://www.gnu.org/licenses/>.
+*/
+
+#include "config.h"
+
+#if !defined (__GNUC__) && !defined (HAVE_ALLOCA_H) && defined (_AIX)
   #pragma alloca
-#endif /* AIX && RISC6000 && !__GNUC__ */
-#ifdef __NT_VC__
-#include <process.h>
-#include <malloc.h>
-#include <io.h>
-#include <trap.h>
-char * find_hashed_filename_nt(const char *);
-/*#include <windows.h>*/
-#endif
+#endif /* _AIX && RISC6000 && !__GNUC__ */
 
 #include <stdio.h>
-#include <ctype.h>
+#include "chartypes.h"
 #include "bashtypes.h"
-/* #include <sys/file.h> */
+#if !defined (_MINIX) && defined (HAVE_SYS_FILE_H)
+#  include <sys/file.h>
+#endif
 #include "filecntl.h"
 #include "posixstat.h"
 #include <signal.h>
-#include "dispose_cmd.h"
-
-#if !defined (SIGABRT)
-#define SIGABRT SIGIOT
+#if defined (HAVE_SYS_PARAM_H)
+#  include <sys/param.h>
 #endif
 
-#include <sys/param.h>
+#if defined (HAVE_UNISTD_H)
+#  include <unistd.h>
+#endif
+
+#include "posixtime.h"
+
+#if defined (HAVE_SYS_RESOURCE_H) && !defined (RLIMTYPE)
+#  include <sys/resource.h>
+#endif
+
+#if defined (HAVE_SYS_TIMES_H) && defined (HAVE_TIMES)
+#  include <sys/times.h>
+#endif
+
 #include <errno.h>
 
 #if !defined (errno)
 extern int errno;
 #endif
 
-#if defined (HAVE_STRING_H)
-#  include <string.h>
-#else /* !HAVE_STRING_H */
-#  include <strings.h>
-#endif /* !HAVE_STRING_H */
+#define NEED_FPURGE_DECL
+#define NEED_SH_SETLINEBUF_DECL
 
+#include "bashansi.h"
+#include "bashintl.h"
+
+#include "memalloc.h"
 #include "shell.h"
-#include "y.tab.h"
-#undef WORD
+#include <y.tab.h>	/* use <...> so we pick it up from the build directory */
 #include "flags.h"
-#include "hash.h"
+#include "builtins.h"
+#include "hashlib.h"
 #include "jobs.h"
 #include "execute_cmd.h"
+#include "findcmd.h"
+#include "redir.h"
+#include "trap.h"
+#include "pathexp.h"
+#include "hashcmd.h"
 
-#include "sysdefs.h"
+#if defined (COND_COMMAND)
+#  include "test.h"
+#endif
+
 #include "builtins/common.h"
 #include "builtins/builtext.h"	/* list of builtins */
 
-#include <glob/fnmatch.h>
+#include "builtins/getopt.h"
+
+#include <glob/strmatch.h>
 #include <tilde/tilde.h>
 
 #if defined (BUFFERED_INPUT)
 #  include "input.h"
 #endif
 
-#ifndef __NT_VC__
-#define PATH_COLON_CHAR ':'
-#else
-#include "nt_types.h"
-/* CENIT MODIFICATION - original code: #define PATH_COLON_CHAR ';'*/
-#define PATH_COLON_CHAR ':'
-#include <stdlib.h>
-
-nt_execute_builtin_command (WORD_LIST *words, REDIRECT *redirects, char *command, int pipe_in, int pipe_out, int async, struct fd_bitmap *fds_to_close, int flags, const char * shell, Function * builtin, SHELL_VAR * func);
-
-int nt_execute_shell_script(char *command, char **args, char **env, int async);
-void delete_all_aliases ();
-
+#if defined (ALIAS)
+#  include "alias.h"
 #endif
 
-#include "unwind_prot.h"
+#if defined (HISTORY)
+#  include "bashhist.h"
+#endif
 
+#if defined (HAVE_MBSTR_H) && defined (HAVE_MBSCHR)
+#  include <mbstr.h>		/* mbschr */
+#endif
 
+extern int dollar_dollar_pid;
 extern int posixly_correct;
+extern int expand_aliases;
+extern int autocd;
 extern int breaking, continuing, loop_level;
-extern int interactive, interactive_shell, login_shell;
-extern int parse_and_execute_level;
-extern int command_string_index, variable_context, line_number;
+extern int parse_and_execute_level, running_trap, sourcelevel;
+extern int command_string_index, line_number;
 extern int dot_found_in_search;
-extern char **temporary_env, **function_env, **builtin_env;
+extern int already_making_children;
+extern int tempenv_assign_error;
 extern char *the_printed_command, *shell_name;
 extern pid_t last_command_subst_pid;
-extern Function *last_shell_builtin, *this_shell_builtin;
-extern jmp_buf top_level, subshell_top_level;
-extern int subshell_argc;
+extern sh_builtin_func_t *last_shell_builtin, *this_shell_builtin;
 extern char **subshell_argv, **subshell_envp;
-extern int already_making_children;
+extern int subshell_argc;
+extern time_t shell_start_time;
+#if 0
+extern char *glob_argv_flags;
+#endif
 
-extern int getdtablesize ();
-extern int close ();
+extern int job_control;	/* XXX */
+
+extern int close __P((int));
 
 /* Static functions defined and used in this file. */
-#ifndef  __NT_VC__
-static void do_piping ();
-static int do_redirections ();
-#else
-void do_piping ();
-int do_redirections ();
-#endif
-static void close_pipes ();
-static void execute_subshell_builtin_or_function ();
-static void cleanup_redirects (), cleanup_func_redirects (), bind_lastarg ();
-static void add_undo_close_redirect (), add_exec_redirect ();
-static int do_redirection_internal ();
-static int expandable_redirection_filename (), execute_shell_script ();
-static int execute_builtin_or_function (), add_undo_redirect ();
-static char *find_user_command_internal (), *find_user_command_in_path ();
-static int execute_disk_command ();
-static int do_redirection_internal2 ();
-/* The line number that the currently executing function starts on. */
-static int function_line_number = 0;
+static void close_pipes __P((int, int));
+static void do_piping __P((int, int));
+static void bind_lastarg __P((char *));
+static int shell_control_structure __P((enum command_type));
+static void cleanup_redirects __P((REDIRECT *));
 
-/* Set to 1 if fd 0 was the subject of redirection to a subshell. */
-static int stdin_redir = 0;
+#if defined (JOB_CONTROL)
+static int restore_signal_mask __P((sigset_t *));
+#endif
+
+static void async_redirect_stdin __P((void));
+
+static int builtin_status __P((int));
+
+static int execute_for_command __P((FOR_COM *));
+#if defined (SELECT_COMMAND)
+static int displen __P((const char *));
+static int print_index_and_element __P((int, int, WORD_LIST *));
+static void indent __P((int, int));
+static void print_select_list __P((WORD_LIST *, int, int, int));
+static char *select_query __P((WORD_LIST *, int, char *, int));
+static int execute_select_command __P((SELECT_COM *));
+#endif
+#if defined (DPAREN_ARITHMETIC)
+static int execute_arith_command __P((ARITH_COM *));
+#endif
+#if defined (COND_COMMAND)
+static int execute_cond_node __P((COND_COM *));
+static int execute_cond_command __P((COND_COM *));
+#endif
+#if defined (COMMAND_TIMING)
+static int mkfmt __P((char *, int, int, time_t, int));
+static void print_formatted_time __P((FILE *, char *,
+				      time_t, int, time_t, int,
+				      time_t, int, int));
+static int time_command __P((COMMAND *, int, int, int, struct fd_bitmap *));
+#endif
+#if defined (ARITH_FOR_COMMAND)
+static intmax_t eval_arith_for_expr __P((WORD_LIST *, int *));
+static int execute_arith_for_command __P((ARITH_FOR_COM *));
+#endif
+static int execute_case_command __P((CASE_COM *));
+static int execute_while_command __P((WHILE_COM *));
+static int execute_until_command __P((WHILE_COM *));
+static int execute_while_or_until __P((WHILE_COM *, int));
+static int execute_if_command __P((IF_COM *));
+static int execute_null_command __P((REDIRECT *, int, int, int));
+static void fix_assignment_words __P((WORD_LIST *));
+static int execute_simple_command __P((SIMPLE_COM *, int, int, int, struct fd_bitmap *));
+static int execute_builtin __P((sh_builtin_func_t *, WORD_LIST *, int, int));
+static int execute_function __P((SHELL_VAR *, WORD_LIST *, int, struct fd_bitmap *, int, int));
+static int execute_builtin_or_function __P((WORD_LIST *, sh_builtin_func_t *,
+					    SHELL_VAR *,
+					    REDIRECT *, struct fd_bitmap *, int));
+static void execute_subshell_builtin_or_function __P((WORD_LIST *, REDIRECT *,
+						      sh_builtin_func_t *,
+						      SHELL_VAR *,
+						      int, int, int,
+						      struct fd_bitmap *,
+						      int));
+static int execute_disk_command __P((WORD_LIST *, REDIRECT *, char *,
+				      int, int, int, struct fd_bitmap *, int));
+
+static char *getinterp __P((char *, int, int *));
+static void initialize_subshell __P((void));
+static int execute_in_subshell __P((COMMAND *, int, int, int, struct fd_bitmap *));
+#if defined (COPROCESS_SUPPORT)
+static int execute_coproc __P((COMMAND *, int, int, struct fd_bitmap *));
+#endif
+
+static int execute_pipeline __P((COMMAND *, int, int, int, struct fd_bitmap *));
+
+static int execute_connection __P((COMMAND *, int, int, int, struct fd_bitmap *));
+
+static int execute_intern_function __P((WORD_DESC *, FUNCTION_DEF *));
+
+/* Set to 1 if fd 0 was the subject of redirection to a subshell.  Global
+   so that reader_loop can set it to zero before executing a command. */
+int stdin_redir;
 
 /* The name of the command that is currently being executed.
    `test' needs this, for example. */
 char *this_command_name;
 
-struct stat SB;		/* used for debugging */
-
-static REDIRECTEE rd;
+/* The printed representation of the currently-executing command (same as
+   the_printed_command), except when a trap is being executed.  Useful for
+   a debugger to know where exactly the program is currently executing. */
+char *the_printed_command_except_trap;
 
 /* For catching RETURN in a function. */
-int return_catch_flag = 0;
+int return_catch_flag;
 int return_catch_value;
-jmp_buf return_catch;
+procenv_t return_catch;
 
 /* The value returned by the last synchronous command. */
-int last_command_exit_value = 0;
+volatile int last_command_exit_value;
+
+/* Whether or not the last command (corresponding to last_command_exit_value)
+   was terminated by a signal, and, if so, which one. */
+int last_command_exit_signal;
+
+/* Are we currently ignoring the -e option for the duration of a builtin's
+   execution? */
+int builtin_ignoring_errexit = 0;
 
 /* The list of redirections to perform which will undo the redirections
    that I made in the shell. */
@@ -159,80 +244,75 @@ REDIRECT *redirection_undo_list = (REDIRECT *)NULL;
    that must be undone even when exec discards redirection_undo_list. */
 REDIRECT *exec_redirection_undo_list = (REDIRECT *)NULL;
 
+/* When greater than zero, value is the `level' of builtins we are
+   currently executing (e.g. `eval echo a' would have it set to 2). */
+int executing_builtin = 0;
+
+/* Non-zero if we are executing a command list (a;b;c, etc.) */
+int executing_list = 0;
+
+/* Non-zero if failing commands in a command substitution should not exit the
+   shell even if -e is set.  Used to pass the CMD_IGNORE_RETURN flag down to
+   commands run in command substitutions by parse_and_execute. */
+int comsub_ignore_return = 0;
+
 /* Non-zero if we have just forked and are currently running in a subshell
    environment. */
-int subshell_environment = 0;
+int subshell_environment;
 
-execute_for_command (FOR_COM *for_command);
-execute_select_command (SELECT_COM *select_command);
-execute_case_command (CASE_COM *case_command);
-execute_while_command (WHILE_COM *while_command);
-execute_until_command (WHILE_COM *while_command);
-execute_while_or_until (WHILE_COM *while_command, int type);
-execute_if_command (IF_COM *if_command);
-execute_simple_command_from_thread (SIMPLE_COM *simple_command, int pipe_in, int pipe_out, int async, struct fd_bitmap *fds_to_close, int from_thread);
-execute_simple_command (SIMPLE_COM *simple_command, int pipe_in, int pipe_out, int async, struct fd_bitmap *fds_to_close);
-int execute_builtin (Function *builtin, WORD_LIST *words, int flags, int subshell);
-intern_function (WORD_DESC *name, COMMAND *function);
-int cleanup_dead_jobs ();
+/* Count of nested subshells, like SHLVL.  Available via $BASH_SUBSHELL */
+int subshell_level = 0;
 
+/* Currently-executing shell function. */
+SHELL_VAR *this_shell_function;
 
-/* CENIT modification: new function */
-static char *find_interp_in_path(const char *ipcFileAndPath)
-{
-   const char *pcBegin = ipcFileAndPath;
-   const char *pcPos = NULL;
+/* If non-zero, matches in case and [[ ... ]] are case-insensitive */
+int match_ignore_case = 0;
 
-   char *pcCommand = NULL;
-   char *pcInterp = NULL;
-   int i = 0;
+int executing_command_builtin = 0;
 
-   // remove path
-   for (pcPos = ipcFileAndPath;
-        '\0' != *pcPos;
-        pcPos++)
-   {
-      if ('/' == *pcPos)
-      {
-         pcBegin = pcPos + 1;
-      }
-   }
+struct stat SB;		/* used for debugging */
 
-   /* remove trailing whitespaces and \r from interpreter */
-   pcInterp = strdup(pcBegin);
-   for (i=strlen(pcInterp) -1; i > 0; i--)
-   {
-      if ((whitespace(pcInterp[i])) || ('\r' == pcInterp[i]))
-      {
-         pcInterp[i] = '\0';
-      }
-      else
-      {
-        break;
-      }
-   }
+static int special_builtin_failed;
 
-   /* find the command in the PATH */
-   pcCommand = find_user_command(pcInterp);
+static COMMAND *currently_executing_command;
 
-   if (NULL != pcCommand)
-   {
-      return(pcCommand);
-   }
+/* The line number that the currently executing function starts on. */
+static int function_line_number;
 
-   return(pcInterp);
-}
+/* XXX - set to 1 if we're running the DEBUG trap and we want to show the line
+   number containing the function name.  Used by executing_line_number to
+   report the correct line number.  Kind of a hack. */
+static int showing_function_line;
 
-/* END OF CENIT modification
- */
+/* $LINENO ($BASH_LINENO) for use by an ERR trap.  Global so parse_and_execute
+   can save and restore it. */
+int line_number_for_err_trap;
+
+/* A sort of function nesting level counter */
+int funcnest = 0;
+int funcnest_max = 0;
+
+int evalnest = 0;		/* bash-4.4/bash-5.0 */
+int evalnest_max = EVALNEST_MAX;
+
+int sourcenest = 0;
+int sourcenest_max = SOURCENEST_MAX;
+
+volatile int from_return_trap = 0;
+
+int lastpipe_opt = 0;
+
+struct fd_bitmap *current_fds_to_close = (struct fd_bitmap *)NULL;
 
 #define FD_BITMAP_DEFAULT_SIZE 32
+
 /* Functions to allocate and deallocate the structures used to pass
    information from the shell to its children about file descriptors
    to close. */
 struct fd_bitmap *
 new_fd_bitmap (size)
-     long size;
+     int size;
 {
   struct fd_bitmap *ret;
 
@@ -242,8 +322,8 @@ new_fd_bitmap (size)
 
   if (size)
     {
-      ret->bitmap = xmalloc (size);
-      bzero (ret->bitmap, size);
+      ret->bitmap = (char *)xmalloc (size);
+      memset (ret->bitmap, '\0', size);
     }
   else
     ret->bitmap = (char *)NULL;
@@ -267,12 +347,39 @@ close_fd_bitmap (fdbp)
   if (fdbp)
     {
       for (i = 0; i < fdbp->size; i++)
-   if (fdbp->bitmap[i])
-     {
-       close (i);
-       fdbp->bitmap[i] = 0;
-     }
+	if (fdbp->bitmap[i])
+	  {
+	    close (i);
+	    fdbp->bitmap[i] = 0;
+	  }
     }
+}
+
+/* Return the line number of the currently executing command. */
+int
+executing_line_number ()
+{
+  if (executing && showing_function_line == 0 &&
+      (variable_context == 0 || interactive_shell == 0) &&
+      currently_executing_command)
+    {
+#if defined (COND_COMMAND)
+      if (currently_executing_command->type == cm_cond)
+	return currently_executing_command->value.Cond->line;
+#endif
+#if defined (DPAREN_ARITHMETIC)
+      if (currently_executing_command->type == cm_arith)
+	return currently_executing_command->value.Arith->line;
+#endif
+#if defined (ARITH_FOR_COMMAND)
+      if (currently_executing_command->type == cm_arith_for)
+	return currently_executing_command->value.ArithFor->line;
+#endif
+
+	return line_number;
+    }
+  else
+    return line_number;
 }
 
 /* Execute the command passed in COMMAND.  COMMAND is exactly what
@@ -282,37 +389,32 @@ close_fd_bitmap (fdbp)
    EXECUTION_SUCCESS or EXECUTION_FAILURE are the only possible
    return values.  Executing a command with nothing in it returns
    EXECUTION_SUCCESS. */
+int
 execute_command (command)
      COMMAND *command;
 {
   struct fd_bitmap *bitmap;
   int result;
 
-  // char *cmd = NULL; /* just for debugging */
-
-#ifdef __NT_VC__ /* kludge */
-
-  nt_clean_current_fds();
-#else
-
   current_fds_to_close = (struct fd_bitmap *)NULL;
-#endif
-
   bitmap = new_fd_bitmap (FD_BITMAP_DEFAULT_SIZE);
   begin_unwind_frame ("execute-command");
   add_unwind_protect (dispose_fd_bitmap, (char *)bitmap);
 
   /* Just do the command, but not asynchronously. */
-
   result = execute_command_internal (command, 0, NO_PIPE, NO_PIPE, bitmap);
 
   dispose_fd_bitmap (bitmap);
   discard_unwind_frame ("execute-command");
 
 #if defined (PROCESS_SUBSTITUTION)
-  unlink_fifo_list ();
+  /* don't unlink fifos if we're in a shell function; wait until the function
+     returns. */
+  if (variable_context == 0)
+    unlink_fifo_list ();
 #endif /* PROCESS_SUBSTITUTION */
 
+  QUIT;
   return (result);
 }
 
@@ -323,15 +425,25 @@ shell_control_structure (type)
 {
   switch (type)
     {
-    case cm_for:
+#if defined (ARITH_FOR_COMMAND)
+    case cm_arith_for:
+#endif
 #if defined (SELECT_COMMAND)
     case cm_select:
+#endif
+#if defined (DPAREN_ARITHMETIC)
+    case cm_arith:
+#endif
+#if defined (COND_COMMAND)
+    case cm_cond:
 #endif
     case cm_case:
     case cm_while:
     case cm_until:
     case cm_if:
+    case cm_for:
     case cm_group:
+    case cm_function_def:
       return (1);
 
     default:
@@ -345,19 +457,21 @@ static void
 cleanup_redirects (list)
      REDIRECT *list;
 {
-  do_redirections (list, 1, 0, 0);
+  do_redirections (list, RX_ACTIVE);
   dispose_redirects (list);
 }
 
+#if 0
 /* Function to unwind_protect the redirections for functions and builtins. */
 static void
 cleanup_func_redirects (list)
      REDIRECT *list;
 {
-  do_redirections (list, 1, 0, 0);
+  do_redirections (list, RX_ACTIVE);
 }
+#endif
 
-static void
+void
 dispose_exec_redirects ()
 {
   if (exec_redirection_undo_list)
@@ -372,14 +486,14 @@ dispose_exec_redirects ()
    is interrupted or errors occur while creating a pipeline. */
 static int
 restore_signal_mask (set)
-     sigset_t set;
+     sigset_t *set;
 {
-  return (sigprocmask (SIG_SETMASK, &set, (sigset_t *)NULL));
+  return (sigprocmask (SIG_SETMASK, set, (sigset_t *)NULL));
 }
 #endif /* JOB_CONTROL */
 
+#ifdef DEBUG
 /* A debugging function that can be called from gdb, for instance. */
-#ifndef __NT_VC__
 void
 open_files ()
 {
@@ -388,20 +502,34 @@ open_files ()
 
   fd_table_size = getdtablesize ();
 
-  fprintf (stderr, "pid %d open files:", getpid ());
+  fprintf (stderr, "pid %ld open files:", (long)getpid ());
   for (i = 3; i < fd_table_size; i++)
     {
       if ((f = fcntl (i, F_GETFD, 0)) != -1)
-   fprintf (stderr, " %d (%s)", i, f ? "close" : "open");
+	fprintf (stderr, " %d (%s)", i, f ? "close" : "open");
     }
   fprintf (stderr, "\n");
 }
+#endif
 
-#endif /* ifndef __NT_VC__ */
+static void
+async_redirect_stdin ()
+{
+  int fd;
 
-#define DESCRIBE_PID(pid) if (interactive) describe_pid (pid)
+  fd = open ("/dev/null", O_RDONLY);
+  if (fd > 0)
+    {
+      dup2 (fd, 0);
+      close (fd);
+    }
+  else if (fd < 0)
+    internal_error (_("cannot redirect standard input from /dev/null: %s"), strerror (errno));
+}
 
-/* Execute the command passed in COMMAND, perhaps doing it asynchrounously.
+#define DESCRIBE_PID(pid) do { if (interactive) describe_pid (pid); } while (0)
+
+/* Execute the command passed in COMMAND, perhaps doing it asynchronously.
    COMMAND is exactly what read_command () places into GLOBAL_COMMAND.
    ASYNCHROUNOUS, if non-zero, says to do this command in the background.
    PIPE_IN and PIPE_OUT are file descriptors saying where input comes
@@ -413,240 +541,214 @@ open_files ()
    EXECUTION_SUCCESS or EXECUTION_FAILURE are the only possible
    return values.  Executing a command with nothing in it returns
    EXECUTION_SUCCESS. */
-execute_command_internal_from_thread (command,
-                          asynchronous,
-                          pipe_in,
-                          pipe_out,
-                          fds_to_close,
-                          from_thread)
+int
+execute_command_internal (command, asynchronous, pipe_in, pipe_out,
+			  fds_to_close)
      COMMAND *command;
      int asynchronous;
      int pipe_in, pipe_out;
      struct fd_bitmap *fds_to_close;
-     int from_thread;
 {
-  int exec_result = EXECUTION_SUCCESS;
-  int invert, ignore_return;
+  int exec_result, user_subshell, invert, ignore_return, was_error_trap;
   REDIRECT *my_undo_list, *exec_undo_list;
+  char *tcmd;
+  volatile int last_pid;
+  volatile int save_line_number;
+#if defined (PROCESS_SUBSTITUTION)
+  volatile int ofifo, nfifo, osize, saved_fifo;
+  volatile char *ofifo_list;
+#endif
 
-  if (!command || breaking || continuing)
+  if (breaking || continuing)
+    return (last_command_exit_value);
+  if (command == 0 || read_but_dont_execute)
     return (EXECUTION_SUCCESS);
 
-
-  // fprintf(stderr, "execute_cmd_internal %s .. 0x%x:0x%x\n", make_command_string(command), nt_get_process_id(), nt_get_thread_id()); fflush(stderr);
-
+  QUIT;
   run_pending_traps ();
 
+#if 0
+  if (running_trap == 0)
+#endif
+    currently_executing_command = command;
+
   invert = (command->flags & CMD_INVERT_RETURN) != 0;
+
+  /* If we're inverting the return value and `set -e' has been executed,
+     we don't want a failing command to inadvertently cause the shell
+     to exit. */
+  if (exit_immediately_on_error && invert)	/* XXX */
+    command->flags |= CMD_IGNORE_RETURN;	/* XXX */
+
+  exec_result = EXECUTION_SUCCESS;
 
   /* If a command was being explicitly run in a subshell, or if it is
      a shell control-structure, and it has a pipe, then we do the command
      in a subshell. */
+  if (command->type == cm_subshell && (command->flags & CMD_NO_FORK))
+    return (execute_in_subshell (command, asynchronous, pipe_in, pipe_out, fds_to_close));
 
-  if ((command->flags & CMD_WANT_SUBSHELL) ||
-      (command->flags & CMD_FORCE_SUBSHELL)  ||
+#if defined (COPROCESS_SUPPORT)
+  if (command->type == cm_coproc)
+    return (execute_coproc (command, pipe_in, pipe_out, fds_to_close));
+#endif
+
+  user_subshell = command->type == cm_subshell || ((command->flags & CMD_WANT_SUBSHELL) != 0);
+
+  if (command->type == cm_subshell ||
+      (command->flags & (CMD_WANT_SUBSHELL|CMD_FORCE_SUBSHELL)) ||
       (shell_control_structure (command->type) &&
        (pipe_out != NO_PIPE || pipe_in != NO_PIPE || asynchronous)))
     {
       pid_t paren_pid;
+      int s;
 
       /* Fork a subshell, turn off the subshell bit, turn off job
-    control and call execute_command () on the command again. */
-      paren_pid = make_child (savestring (make_command_string (command)),
-               asynchronous);
+	 control and call execute_command () on the command again. */
+      line_number_for_err_trap = line_number;	/* XXX - save value? */
+      tcmd = make_command_string (command);
+      paren_pid = make_child (savestring (tcmd), asynchronous);
+
+      if (user_subshell && signal_is_trapped (ERROR_TRAP) && 
+	  signal_in_progress (DEBUG_TRAP) == 0 && running_trap == 0)
+	{
+	  FREE (the_printed_command_except_trap);
+	  the_printed_command_except_trap = savestring (the_printed_command);
+	}
+
       if (paren_pid == 0)
-   {
-     int user_subshell, return_code, function_value;
-
-     /* Cancel traps, in trap.c. */
-     restore_original_signals ();
-     if (asynchronous)
-       setup_async_signals ();
-
-#if defined (JOB_CONTROL)
-     set_sigchld_handler ();
-#endif /* JOB_CONTROL */
-
-     set_sigint_handler ();
-
-     user_subshell = (command->flags & CMD_WANT_SUBSHELL) != 0;
-     command->flags &= ~(CMD_FORCE_SUBSHELL | CMD_WANT_SUBSHELL | CMD_INVERT_RETURN);
-
-     /* If a command is asynchronous in a subshell (like ( foo ) & or
-        the special case of an asynchronous GROUP command where the
-        the subshell bit is turned on down in case cm_group: below),
-        turn off `asynchronous', so that two subshells aren't spawned.
-
-        This seems semantically correct to me.  For example,
-        ( foo ) & seems to say ``do the command `foo' in a subshell
-        environment, but don't wait for that subshell to finish'',
-        and "{ foo ; bar } &" seems to me to be like functions or
-        builtins in the background, which executed in a subshell
-        environment.  I just don't see the need to fork two subshells. */
-
-     /* Don't fork again, we are already in a subshell.  A `doubly
-        async' shell is not interactive, however. */
-     if (asynchronous)
-       {
-#if defined (JOB_CONTROL)
-         /* If a construct like ( exec xxx yyy ) & is given while job
-       control is active, we want to prevent exec from putting the
-       subshell back into the original process group, carefully
-       undoing all the work we just did in make_child. */
-         original_pgrp = -1;
-#endif /* JOB_CONTROL */
-         interactive_shell = 0;
-         asynchronous = 0;
-       }
-
-     /* Subshells are neither login nor interactive. */
-     login_shell = interactive = 0;
-
-     subshell_environment = 1;
-
-#if defined (JOB_CONTROL)
-     /* Delete all traces that there were any jobs running.  This is
-        only for subshells. */
-     without_job_control ();
-#endif /* JOB_CONTROL */
-     do_piping (pipe_in, pipe_out);
-
-     /* If this is a user subshell, set a flag if stdin was redirected.
-        This is used later to decide whether to redirect fd 0 to
-        /dev/null for async commands in the subshell.  This adds more
-        sh compatibility, but I'm not sure it's the right thing to do. */
-     if (user_subshell)
-       {
-         REDIRECT *r;
-
-         for (r = command->redirects; r; r = r->next)
-      switch (r->instruction)
         {
-        case r_input_direction:
-        case r_inputa_direction:
-        case r_input_output:
-        case r_reading_until:
-        case r_deblank_reading_until:
-          stdin_redir++;
-          break;
-        case r_duplicating_input:
-        case r_duplicating_input_word:
-        case r_close_this:
-          if (r->redirector == 0)
-            stdin_redir++;
-          break;
+	  /* We want to run the exit trap for forced {} subshells, and we
+	     want to note this before execute_in_subshell modifies the
+	     COMMAND struct.  Need to keep in mind that execute_in_subshell
+	     runs the exit trap for () subshells itself. */
+	  /* This handles { command; } & */
+	  s = user_subshell == 0 && command->type == cm_group && pipe_in == NO_PIPE && pipe_out == NO_PIPE && asynchronous;
+	  /* run exit trap for : | { ...; } and { ...; } | : */
+	  /* run exit trap for : | ( ...; ) and ( ...; ) | : */
+	  s += user_subshell == 0 && command->type == cm_group && (pipe_in != NO_PIPE || pipe_out != NO_PIPE) && asynchronous == 0;
+
+	  last_command_exit_value = execute_in_subshell (command, asynchronous, pipe_in, pipe_out, fds_to_close);
+	  if (s)
+	    subshell_exit (last_command_exit_value);
+	  else
+	    sh_exit (last_command_exit_value);
+	  /* NOTREACHED */
         }
-       }
-
-     if (fds_to_close)
-       close_fd_bitmap (fds_to_close);
-
-     /* Do redirections, then dispose of them before recursive call. */
-     if (command->redirects)
-       {
-         if (do_redirections (command->redirects, 1, 0, 0) != 0)
-         {
-#ifndef  __NT_VC__
-            exit (EXECUTION_FAILURE);
-#else
-            return(EXECUTION_FAILURE);
-#endif
-         }
-
-         dispose_redirects (command->redirects);
-         command->redirects = (REDIRECT *)NULL;
-       }
-
-     /* If this is a simple command, tell execute_disk_command that it
-        might be able to get away without forking and simply exec.
-        This means things like ( sleep 10 ) will only cause one fork. */
-     if (user_subshell && command->type == cm_simple)
-       {
-         command->flags |= CMD_NO_FORK;
-         command->value.Simple->flags |= CMD_NO_FORK;
-       }
-
-     /* If we're inside a function while executing this subshell, we
-        need to handle a possible `return'. */
-     function_value = 0;
-     if (return_catch_flag)
-     {
-       /* function_value =  SETJMP(return_catch);*/
-        SETJMP(function_value, return_catch);
-     }
-
-     if (function_value)
-       return_code = return_catch_value;
-     else
-       return_code = execute_command_internal
-         (command, asynchronous, NO_PIPE, NO_PIPE, fds_to_close);
-
-     /* If we were explicitly placed in a subshell with (), we need
-        to do the `shell cleanup' things, such as running traps[0]. */
-     if (user_subshell)
-       run_exit_trap ();
-
-#ifndef  __NT_VC__
-     exit (return_code);
-#else
-     return(return_code);
-#endif
-   }
       else
-   {
-     close_pipes (pipe_in, pipe_out);
+	{
+	  close_pipes (pipe_in, pipe_out);
 
 #if defined (PROCESS_SUBSTITUTION) && defined (HAVE_DEV_FD)
-     unlink_fifo_list ();
+	  if (variable_context == 0)	/* wait until shell function completes */
+	    unlink_fifo_list ();
 #endif
-     /* If we are part of a pipeline, and not the end of the pipeline,
-        then we should simply return and let the last command in the
-        pipe be waited for.  If we are not in a pipeline, or are the
-        last command in the pipeline, then we wait for the subshell
-        and return its exit status as usual. */
-     if (pipe_out != NO_PIPE)
-       return (EXECUTION_SUCCESS);
+	  /* If we are part of a pipeline, and not the end of the pipeline,
+	     then we should simply return and let the last command in the
+	     pipe be waited for.  If we are not in a pipeline, or are the
+	     last command in the pipeline, then we wait for the subshell
+	     and return its exit status as usual. */
+	  if (pipe_out != NO_PIPE)
+	    return (EXECUTION_SUCCESS);
 
-     stop_pipeline (asynchronous, (COMMAND *)NULL);
+	  stop_pipeline (asynchronous, (COMMAND *)NULL);
 
-     if (!asynchronous)
-       {
-         last_command_exit_value = wait_for (paren_pid);
+	  if (asynchronous == 0)
+	    {
+	      was_error_trap = signal_is_trapped (ERROR_TRAP) && signal_is_ignored (ERROR_TRAP) == 0;
+	      invert = (command->flags & CMD_INVERT_RETURN) != 0;
+	      ignore_return = (command->flags & CMD_IGNORE_RETURN) != 0;
 
-         /* If we have to, invert the return value. */
-         if (invert)
-      {
-        if (last_command_exit_value == EXECUTION_SUCCESS)
-          return (EXECUTION_FAILURE);
-        else
-          return (EXECUTION_SUCCESS);
-      }
-         else
-      return (last_command_exit_value);
-       }
-     else
-       {
-         DESCRIBE_PID (paren_pid);
+	      exec_result = wait_for (paren_pid);
 
-         run_pending_traps ();
+	      /* If we have to, invert the return value. */
+	      if (invert)
+		exec_result = ((exec_result == EXECUTION_SUCCESS)
+				? EXECUTION_FAILURE
+				: EXECUTION_SUCCESS);
 
-         return (EXECUTION_SUCCESS);
-       }
-   }
+	      last_command_exit_value = exec_result;
+	      if (user_subshell && was_error_trap && ignore_return == 0 && invert == 0 && exec_result != EXECUTION_SUCCESS)
+		{
+		  save_line_number = line_number;
+		  line_number = line_number_for_err_trap;
+		  run_error_trap ();
+		  line_number = save_line_number;
+		}
+
+	      if (user_subshell && ignore_return == 0 && invert == 0 && exit_immediately_on_error && exec_result != EXECUTION_SUCCESS)
+		{
+		  run_pending_traps ();
+		  jump_to_top_level (ERREXIT);
+		}
+
+	      return (last_command_exit_value);
+	    }
+	  else
+	    {
+	      DESCRIBE_PID (paren_pid);
+
+	      run_pending_traps ();
+
+	      /* Posix 2013 2.9.3.1: "the exit status of an asynchronous list
+		 shall be zero." */
+	      last_command_exit_value = 0;
+	      return (EXECUTION_SUCCESS);
+	    }
+	}
     }
+
+#if defined (COMMAND_TIMING)
+  if (command->flags & CMD_TIME_PIPELINE)
+    {
+      if (asynchronous)
+	{
+	  command->flags |= CMD_FORCE_SUBSHELL;
+	  exec_result = execute_command_internal (command, 1, pipe_in, pipe_out, fds_to_close);
+	}
+      else
+	{
+	  exec_result = time_command (command, asynchronous, pipe_in, pipe_out, fds_to_close);
+#if 0
+	  if (running_trap == 0)
+#endif
+	    currently_executing_command = (COMMAND *)NULL;
+	}
+      return (exec_result);
+    }
+#endif /* COMMAND_TIMING */
+
+  if (shell_control_structure (command->type) && command->redirects)
+    stdin_redir = stdin_redirects (command->redirects);
+
+#if defined (PROCESS_SUBSTITUTION)
+  if (variable_context != 0)
+    {
+      ofifo = num_fifos ();
+      ofifo_list = copy_fifo_list ((int *)&osize);
+      saved_fifo = 1;
+    }
+  else
+    saved_fifo = 0;
+#endif
 
   /* Handle WHILE FOR CASE etc. with redirections.  (Also '&' input
      redirection.)  */
-  if (do_redirections (command->redirects, 1, 1, 0) != 0)
+  if (do_redirections (command->redirects, RX_ACTIVE|RX_UNDOABLE) != 0)
     {
       cleanup_redirects (redirection_undo_list);
       redirection_undo_list = (REDIRECT *)NULL;
       dispose_exec_redirects ();
-      return (EXECUTION_FAILURE);
+#if defined (PROCESS_SUBSTITUTION)
+      if (saved_fifo)
+	free ((void *)ofifo_list);
+#endif
+      return (last_command_exit_value = EXECUTION_FAILURE);
     }
 
   if (redirection_undo_list)
     {
+      /* XXX - why copy here? */
       my_undo_list = (REDIRECT *)copy_redirects (redirection_undo_list);
       dispose_redirects (redirection_undo_list);
       redirection_undo_list = (REDIRECT *)NULL;
@@ -656,6 +758,7 @@ execute_command_internal_from_thread (command,
 
   if (exec_redirection_undo_list)
     {
+      /* XXX - why copy here? */
       exec_undo_list = (REDIRECT *)copy_redirects (exec_redirection_undo_list);
       dispose_redirects (exec_redirection_undo_list);
       exec_redirection_undo_list = (REDIRECT *)NULL;
@@ -676,434 +779,271 @@ execute_command_internal_from_thread (command,
 
   QUIT;
 
- /* fprintf(stderr, "COmmand type: %s => %d\n", make_command_string(command), command->type); fflush(stderr); */
   switch (command->type)
     {
+    case cm_simple:
+      {
+	save_line_number = line_number;
+	/* We can't rely on variables retaining their values across a
+	   call to execute_simple_command if a longjmp occurs as the
+	   result of a `return' builtin.  This is true for sure with gcc. */
+#if defined (RECYCLES_PIDS)
+	last_made_pid = NO_PID;
+#endif
+	last_pid = last_made_pid;
+	was_error_trap = signal_is_trapped (ERROR_TRAP) && signal_is_ignored (ERROR_TRAP) == 0;
+
+	if (ignore_return && command->value.Simple)
+	  command->value.Simple->flags |= CMD_IGNORE_RETURN;
+	if (command->flags & CMD_STDIN_REDIR)
+	  command->value.Simple->flags |= CMD_STDIN_REDIR;
+
+	line_number_for_err_trap = line_number = command->value.Simple->line;
+	exec_result =
+	  execute_simple_command (command->value.Simple, pipe_in, pipe_out,
+				  asynchronous, fds_to_close);
+	line_number = save_line_number;
+
+	/* The temporary environment should be used for only the simple
+	   command immediately following its definition. */
+	dispose_used_env_vars ();
+
+#if (defined (ultrix) && defined (mips)) || defined (C_ALLOCA)
+	/* Reclaim memory allocated with alloca () on machines which
+	   may be using the alloca emulation code. */
+	(void) alloca (0);
+#endif /* (ultrix && mips) || C_ALLOCA */
+
+	/* If we forked to do the command, then we must wait_for ()
+	   the child. */
+
+	/* XXX - this is something to watch out for if there are problems
+	   when the shell is compiled without job control.  Don't worry about
+	   whether or not last_made_pid == last_pid; already_making_children
+	   tells us whether or not there are unwaited-for children to wait
+	   for and reap. */
+	if (already_making_children && pipe_out == NO_PIPE)
+	  {
+	    stop_pipeline (asynchronous, (COMMAND *)NULL);
+
+	    if (asynchronous)
+	      {
+		DESCRIBE_PID (last_made_pid);
+		exec_result = EXECUTION_SUCCESS;
+		invert = 0;		/* async commands always succeed */
+	      }
+	    else
+#if !defined (JOB_CONTROL)
+	      /* Do not wait for asynchronous processes started from
+		 startup files. */
+	    if (last_made_pid != NO_PID && last_made_pid != last_asynchronous_pid)
+#else
+	    if (last_made_pid != NO_PID)
+#endif
+	    /* When executing a shell function that executes other
+	       commands, this causes the last simple command in
+	       the function to be waited for twice.  This also causes
+	       subshells forked to execute builtin commands (e.g., in
+	       pipelines) to be waited for twice. */
+	      exec_result = wait_for (last_made_pid);
+	  }
+      }
+
+      /* 2009/02/13 -- pipeline failure is processed elsewhere.  This handles
+	 only the failure of a simple command. */
+      if (was_error_trap && ignore_return == 0 && invert == 0 && pipe_in == NO_PIPE && pipe_out == NO_PIPE && exec_result != EXECUTION_SUCCESS)
+	{
+	  last_command_exit_value = exec_result;
+	  line_number = line_number_for_err_trap;
+	  run_error_trap ();
+	  line_number = save_line_number;
+	}
+
+      if (ignore_return == 0 && invert == 0 &&
+	  ((posixly_correct && interactive == 0 && special_builtin_failed) ||
+	   (exit_immediately_on_error && pipe_in == NO_PIPE && pipe_out == NO_PIPE && exec_result != EXECUTION_SUCCESS)))
+	{
+	  last_command_exit_value = exec_result;
+	  run_pending_traps ();
+
+	  /* Undo redirections before running exit trap on the way out of
+	     set -e. Report by Mark Farrell 5/19/2014 */
+	  if (exit_immediately_on_error && signal_is_trapped (0) &&
+		unwind_protect_tag_on_stack ("saved-redirects"))
+	    run_unwind_frame ("saved-redirects");
+
+	  jump_to_top_level (ERREXIT);
+	}
+
+      break;
+
     case cm_for:
       if (ignore_return)
-   command->value.For->flags |= CMD_IGNORE_RETURN;
+	command->value.For->flags |= CMD_IGNORE_RETURN;
       exec_result = execute_for_command (command->value.For);
       break;
+
+#if defined (ARITH_FOR_COMMAND)
+    case cm_arith_for:
+      if (ignore_return)
+	command->value.ArithFor->flags |= CMD_IGNORE_RETURN;
+      exec_result = execute_arith_for_command (command->value.ArithFor);
+      break;
+#endif
 
 #if defined (SELECT_COMMAND)
     case cm_select:
       if (ignore_return)
-   command->value.Select->flags |= CMD_IGNORE_RETURN;
+	command->value.Select->flags |= CMD_IGNORE_RETURN;
       exec_result = execute_select_command (command->value.Select);
       break;
 #endif
 
     case cm_case:
       if (ignore_return)
-   command->value.Case->flags |= CMD_IGNORE_RETURN;
+	command->value.Case->flags |= CMD_IGNORE_RETURN;
       exec_result = execute_case_command (command->value.Case);
       break;
 
     case cm_while:
       if (ignore_return)
-   command->value.While->flags |= CMD_IGNORE_RETURN;
+	command->value.While->flags |= CMD_IGNORE_RETURN;
       exec_result = execute_while_command (command->value.While);
       break;
 
     case cm_until:
       if (ignore_return)
-   command->value.While->flags |= CMD_IGNORE_RETURN;
+	command->value.While->flags |= CMD_IGNORE_RETURN;
       exec_result = execute_until_command (command->value.While);
       break;
 
     case cm_if:
       if (ignore_return)
-   command->value.If->flags |= CMD_IGNORE_RETURN;
+	command->value.If->flags |= CMD_IGNORE_RETURN;
       exec_result = execute_if_command (command->value.If);
       break;
 
     case cm_group:
 
       /* This code can be executed from either of two paths: an explicit
-    '{}' command, or via a function call.  If we are executed via a
-    function call, we have already taken care of the function being
-    executed in the background (down there in execute_simple_command ()),
-    and this command should *not* be marked as asynchronous.  If we
-    are executing a regular '{}' group command, and asynchronous == 1,
-    we must want to execute the whole command in the background, so we
-    need a subshell, and we want the stuff executed in that subshell
-    (this group command) to be executed in the foreground of that
-    subshell (i.e. there will not be *another* subshell forked).
+	 '{}' command, or via a function call.  If we are executed via a
+	 function call, we have already taken care of the function being
+	 executed in the background (down there in execute_simple_command ()),
+	 and this command should *not* be marked as asynchronous.  If we
+	 are executing a regular '{}' group command, and asynchronous == 1,
+	 we must want to execute the whole command in the background, so we
+	 need a subshell, and we want the stuff executed in that subshell
+	 (this group command) to be executed in the foreground of that
+	 subshell (i.e. there will not be *another* subshell forked).
 
-    What we do is to force a subshell if asynchronous, and then call
-    execute_command_internal again with asynchronous still set to 1,
-    but with the original group command, so the printed command will
-    look right.
+	 What we do is to force a subshell if asynchronous, and then call
+	 execute_command_internal again with asynchronous still set to 1,
+	 but with the original group command, so the printed command will
+	 look right.
 
-    The code above that handles forking off subshells will note that
-    both subshell and async are on, and turn off async in the child
-    after forking the subshell (but leave async set in the parent, so
-    the normal call to describe_pid is made).  This turning off
-    async is *crucial*; if it is not done, this will fall into an
-    infinite loop of executions through this spot in subshell after
-    subshell until the process limit is exhausted. */
+	 The code above that handles forking off subshells will note that
+	 both subshell and async are on, and turn off async in the child
+	 after forking the subshell (but leave async set in the parent, so
+	 the normal call to describe_pid is made).  This turning off
+	 async is *crucial*; if it is not done, this will fall into an
+	 infinite loop of executions through this spot in subshell after
+	 subshell until the process limit is exhausted. */
 
       if (asynchronous)
-   {
-     command->flags |= CMD_FORCE_SUBSHELL;
-     exec_result =
-       execute_command_internal (command, 1, pipe_in, pipe_out,
-                  fds_to_close);
-   }
+	{
+	  command->flags |= CMD_FORCE_SUBSHELL;
+	  exec_result =
+	    execute_command_internal (command, 1, pipe_in, pipe_out,
+				      fds_to_close);
+	}
       else
-   {
-     if (ignore_return && command->value.Group->command)
-       command->value.Group->command->flags |= CMD_IGNORE_RETURN;
-     exec_result =
-       execute_command_internal (command->value.Group->command,
-                  asynchronous, pipe_in, pipe_out,
-                  fds_to_close);
-   }
-      break;
-
-    case cm_simple:
-      {
-   /* We can't rely on this variable retaining its value across a
-      call to execute_simple_command if a longjmp occurs as the
-      result of a `return' builtin.  This is true for sure with gcc. */
-   pid_t last_pid = last_made_pid;
-
-/*   fprintf(stderr, "Execute_command_internal: cm_simple %s --- %d\n",make_command_string(command), __LINE__);*/
-   if (ignore_return && command->value.Simple)
-     command->value.Simple->flags |= CMD_IGNORE_RETURN;
-
-   exec_result =
-      execute_simple_command_from_thread (command->value.Simple, pipe_in, pipe_out,
-                              asynchronous, fds_to_close, from_thread);
-
-/*   fprintf(stderr, "Execute_command_internal: cm_simple exec_result = %d, %d\n", exec_result,__LINE__);*/
-
-   /* The temporary environment should be used for only the simple
-      command immediately following its definition. */
-   dispose_used_env_vars ();
-
-#if (defined (Ultrix) && defined (mips)) || !defined (HAVE_ALLOCA)
-   /* Reclaim memory allocated with alloca () on machines which
-      may be using the alloca emulation code. */
-   (void) alloca (0);
-#endif /* (Ultrix && mips) || !HAVE_ALLOCA */
-
-   /* If we forked to do the command, then we must wait_for ()
-      the child. */
-
-   /* XXX - this is something to watch out for if there are problems
-      when the shell is compiled without job control. */
-   if (already_making_children && pipe_out == NO_PIPE &&
-       last_pid != last_made_pid)
-     {
-       stop_pipeline (asynchronous, (COMMAND *)NULL);
-
-       if (asynchronous)
-         {
-      DESCRIBE_PID (last_made_pid);
-         }
-       else
-#if !defined (JOB_CONTROL)
-         /* Do not wait for asynchronous processes started from
-       startup files. */
-       if (last_made_pid != last_asynchronous_pid)
-#endif
-       /* When executing a shell function that executes other
-          commands, this causes the last simple command in
-          the function to be waited for twice. */
-         exec_result = wait_for (last_made_pid);
-     }
-      }
-
-      if (!ignore_return && exit_immediately_on_error && !invert &&
-     (exec_result != EXECUTION_SUCCESS))
-   {
-     last_command_exit_value = exec_result;
-     run_pending_traps ();
-     LONGJMP (top_level, EXITPROG);
-   }
-/*   fprintf(stderr, "Execute_command_internal: cm_simple %s -- %d\n",make_command_string(command),  __LINE__);*/
+	{
+	  if (ignore_return && command->value.Group->command)
+	    command->value.Group->command->flags |= CMD_IGNORE_RETURN;
+	  exec_result =
+	    execute_command_internal (command->value.Group->command,
+				      asynchronous, pipe_in, pipe_out,
+				      fds_to_close);
+	}
       break;
 
     case cm_connection:
-      switch (command->value.Connection->connector)
-   {
-     /* Do the first command asynchronously. */
-   case '&':
-     {
-       COMMAND *tc = command->value.Connection->first;
-       REDIRECT *rp;
+      exec_result = execute_connection (command, asynchronous,
+					pipe_in, pipe_out, fds_to_close);
+      if (asynchronous)
+	invert = 0;		/* XXX */
 
-       if (!tc)
-         break;
-
-       rp = tc->redirects;
-
-       if (ignore_return && tc)
-         tc->flags |= CMD_IGNORE_RETURN;
-
-       /* If this shell was compiled without job control support, if
-          the shell is not running interactively, if we are currently
-          in a subshell via `( xxx )', or if job control is not active
-          then the standard input for an asynchronous command is
-          forced to /dev/null. */
-#ifndef __NT_VC__
-#if defined (JOB_CONTROL)
-       if ((!interactive_shell || subshell_environment || !job_control) &&
-      !stdin_redir)
-#else
-       if (!stdin_redir)
-#endif /* JOB_CONTROL */
-       {
-         REDIRECT *tr;
-
-         /*rd.filename = make_word ("/dev/null"); */
-         rd.filename = make_word ("NUL");
-         tr = make_redirection (0, r_inputa_direction, rd);
-         tr->next = tc->redirects;
-         tc->redirects = tr;
-       }
-#endif /* ifndef __NT_VC__ */
-
-       exec_result = execute_command_internal
-         (tc, 1, pipe_in, pipe_out, fds_to_close);
-
-#if defined (JOB_CONTROL)
-       if ((!interactive_shell || subshell_environment || !job_control) &&
-      !stdin_redir)
-#else
-       if (!stdin_redir)
-#endif /* JOB_CONTROL */
-       {
-         /* Remove the redirection we added above.  It matters,
-       especially for loops, which call execute_command ()
-       multiple times with the same command. */
-         REDIRECT *tr, *tl;
-
-         tr = tc->redirects;
-     if (tc->redirects) {
-      do
-      {
-        tl = tc->redirects;
-        tc->redirects = tc->redirects->next;
-      }
-         while (tc->redirects && tc->redirects != rp);
-
-         tl->next = (REDIRECT *)NULL;
-         dispose_redirects (tr);
-       }
-   }
-
-       {
-         register COMMAND *second;
-
-         second = command->value.Connection->second;
-
-         if (second)
-      {
-        if (ignore_return)
-          second->flags |= CMD_IGNORE_RETURN;
-
-        exec_result = execute_command_internal
-          (second, asynchronous, pipe_in, pipe_out, fds_to_close);
-      }
-       }
-     }
-     break;
-
-   case ';':
-     /* Just call execute command on both of them. */
-     if (ignore_return)
-       {
-         if (command->value.Connection->first)
-      command->value.Connection->first->flags |= CMD_IGNORE_RETURN;
-         if (command->value.Connection->second)
-      command->value.Connection->second->flags |= CMD_IGNORE_RETURN;
-       }
-     QUIT;
-     execute_command (command->value.Connection->first);
-     QUIT;
-     exec_result =
-       execute_command_internal (command->value.Connection->second,
-                  asynchronous, pipe_in, pipe_out,
-                  fds_to_close);
-     break;
-
-   case '|':
-   {
-      int prev, fildes[2], new_bitmap_size, dummyfd;
-      COMMAND *cmd;
-      struct fd_bitmap *fd_bitmap;
-
-#if defined (JOB_CONTROL)
-      sigset_t set, oset;
-      BLOCK_CHILD (set, oset);
-#endif /* JOB_CONTROL */
-
-      prev = pipe_in;
-      cmd = command;
-
-      while (cmd &&
-             cmd->type == cm_connection &&
-             cmd->value.Connection &&
-             cmd->value.Connection->connector == '|')
-      {
-         /* Make a pipeline between the two commands. */
-         if (PIPE (fildes) < 0)
-         {
-            report_error ("pipe error: %s", strerror (errno));
-#if defined (JOB_CONTROL)
-            terminate_current_pipeline ();
-            kill_current_pipeline ();
-#endif /* JOB_CONTROL */
-            last_command_exit_value = EXECUTION_FAILURE;
-            /* The unwind-protects installed below will take care
-               of closing all of the open file descriptors. */
-            throw_to_top_level ();
-         }
-         else
-         {
-            /* Here is a problem: with the new file close-on-exec
-               code, the read end of the pipe (fildes[0]) stays open
-               in the first process, so that process will never get a
-               SIGPIPE.  There is no way to signal the first process
-               that it should close fildes[0] after forking, so it
-               remains open.  No SIGPIPE is ever sent because there
-               is still a file descriptor open for reading connected
-               to the pipe.  We take care of that here.  This passes
-               around a bitmap of file descriptors that must be
-               closed after making a child process in
-               execute_simple_command. */
-
-            /* We need fd_bitmap to be at least as big as fildes[0].
-               If fildes[0] is less than fds_to_close->size, then
-               use fds_to_close->size. */
-            if (fildes[0] < fds_to_close->size)
-               new_bitmap_size = fds_to_close->size;
-            else
-               new_bitmap_size = fildes[0] + 8;
-
-            fd_bitmap = new_fd_bitmap (new_bitmap_size);
-
-            /* Now copy the old information into the new bitmap. */
-            xbcopy ((char *)fds_to_close->bitmap,
-                    (char *)fd_bitmap->bitmap, fds_to_close->size);
-
-            /* And mark the pipe file descriptors to be closed. */
-            fd_bitmap->bitmap[fildes[0]] = 1;
-
-            /* In case there are pipe or out-of-processes errors, we
-               want all these file descriptors to be closed when
-               unwind-protects are run, and the storage used for the
-               bitmaps freed up. */
-            begin_unwind_frame ("pipe-file-descriptors");
-            add_unwind_protect (dispose_fd_bitmap, fd_bitmap);
-            add_unwind_protect (close_fd_bitmap, fd_bitmap);
-            if (prev >= 0)
-               add_unwind_protect (close, prev);
-            dummyfd = fildes[1];
-            add_unwind_protect (close, dummyfd);
-
-#if defined (JOB_CONTROL)
-            add_unwind_protect (restore_signal_mask, oset);
-#endif /* JOB_CONTROL */
-
-            if (ignore_return && cmd->value.Connection->first)
-               cmd->value.Connection->first->flags |= CMD_IGNORE_RETURN;
-
-            execute_command_internal(cmd->value.Connection->first,  asynchronous , prev,
-                                     fildes[1], fd_bitmap);
-
-            if (prev >= 0)
-               close (prev);
-
-            prev = fildes[0];
-            close (fildes[1]);
-            nt_deletePipeAssoc(prev);
-
-            dispose_fd_bitmap (fd_bitmap);
-            discard_unwind_frame ("pipe-file-descriptors");
-         }
-         cmd = cmd->value.Connection->second;
-      }
-
-      /* Now execute the rightmost command in the pipeline.  */
-      if (ignore_return && cmd)
-         cmd->flags |= CMD_IGNORE_RETURN;
-
-      exec_result =
-         execute_command_internal
-         (cmd, asynchronous, prev, pipe_out, fds_to_close);
-
-      if (prev >= 0)
-         close (prev);
-
-#if defined (JOB_CONTROL)
-      UNBLOCK_CHILD (oset);
-#endif
-   }
-   break;
-
-   case AND_AND:
-   case OR_OR:
-     if (asynchronous)
-       {
-         /* If we have something like `a && b &' or `a || b &', run the
-            && or || stuff in a subshell.  Force a subshell and just call
-       execute_command_internal again.  Leave asynchronous on
-       so that we get a report from the parent shell about the
-       background job. */
-         command->flags |= CMD_FORCE_SUBSHELL;
-         exec_result = execute_command_internal (command, 1, pipe_in,
-               pipe_out, fds_to_close);
-         break;
-       }
-
-     /* Execute the first command.  If the result of that is successful
-        and the connector is AND_AND, or the result is not successful
-        and the connector is OR_OR, then execute the second command,
-        otherwise return. */
-
-     if (command->value.Connection->first)
-       command->value.Connection->first->flags |= CMD_IGNORE_RETURN;
-
-     exec_result = execute_command (command->value.Connection->first);
-     QUIT;
-     if (((command->value.Connection->connector == AND_AND) &&
-          (exec_result == EXECUTION_SUCCESS)) ||
-         ((command->value.Connection->connector == OR_OR) &&
-          (exec_result != EXECUTION_SUCCESS)))
-       {
-         if (ignore_return && command->value.Connection->second)
-      command->value.Connection->second->flags |=
-        CMD_IGNORE_RETURN;
-
-         exec_result =
-      execute_command (command->value.Connection->second);
-       }
-     break;
-
-   default:
-     programming_error ("Bad connector `%d'!",
-              command->value.Connection->connector);
-     LONGJMP (top_level, DISCARD);
-     break;
-   }
       break;
 
+#if defined (DPAREN_ARITHMETIC)
+    case cm_arith:
+      was_error_trap = signal_is_trapped (ERROR_TRAP) && signal_is_ignored (ERROR_TRAP) == 0;
+      if (ignore_return)
+	command->value.Arith->flags |= CMD_IGNORE_RETURN;
+      line_number_for_err_trap = save_line_number = line_number;
+      exec_result = execute_arith_command (command->value.Arith);
+      line_number = save_line_number;
+
+      if (was_error_trap && ignore_return == 0 && invert == 0 && exec_result != EXECUTION_SUCCESS)
+	{
+	  last_command_exit_value = exec_result;
+	  save_line_number = line_number;
+	  line_number = line_number_for_err_trap;
+	  run_error_trap ();
+	  line_number = save_line_number;
+	}
+
+      if (ignore_return == 0 && invert == 0 && exit_immediately_on_error && exec_result != EXECUTION_SUCCESS)
+	{
+	  last_command_exit_value = exec_result;
+	  run_pending_traps ();
+	  jump_to_top_level (ERREXIT);
+	}
+
+      break;
+#endif
+
+#if defined (COND_COMMAND)
+    case cm_cond:
+      was_error_trap = signal_is_trapped (ERROR_TRAP) && signal_is_ignored (ERROR_TRAP) == 0;
+      if (ignore_return)
+	command->value.Cond->flags |= CMD_IGNORE_RETURN;
+
+      line_number_for_err_trap = save_line_number = line_number;
+      exec_result = execute_cond_command (command->value.Cond);
+      line_number = save_line_number;
+
+      if (was_error_trap && ignore_return == 0 && invert == 0 && exec_result != EXECUTION_SUCCESS)
+	{
+	  last_command_exit_value = exec_result;
+	  save_line_number = line_number;
+	  line_number = line_number_for_err_trap;
+	  run_error_trap ();
+	  line_number = save_line_number;
+	}
+
+      if (ignore_return == 0 && invert == 0 && exit_immediately_on_error && exec_result != EXECUTION_SUCCESS)
+	{
+	  last_command_exit_value = exec_result;
+	  run_pending_traps ();
+	  jump_to_top_level (ERREXIT);
+	}
+
+      break;
+#endif
+    
     case cm_function_def:
-      exec_result = intern_function (command->value.Function_def->name,
-                 command->value.Function_def->command);
+      exec_result = execute_intern_function (command->value.Function_def->name,
+					     command->value.Function_def);
       break;
 
     default:
-      programming_error
-   ("execute_command: Bad command type `%d'!", command->type);
+      command_error ("execute_command", CMDERR_BADTYPE, command->type, 0);
     }
 
   if (my_undo_list)
     {
-      do_redirections (my_undo_list, 1, 0, 0);
+      do_redirections (my_undo_list, RX_ACTIVE);
       dispose_redirects (my_undo_list);
     }
 
@@ -1113,135 +1053,1948 @@ execute_command_internal_from_thread (command,
   if (my_undo_list || exec_undo_list)
     discard_unwind_frame ("loop_redirections");
 
+#if defined (PROCESS_SUBSTITUTION)
+  if (saved_fifo)
+    {
+      nfifo = num_fifos ();
+      if (nfifo > ofifo)
+	close_new_fifos ((char *)ofifo_list, osize);
+      free ((void *)ofifo_list);
+    }
+#endif
+
   /* Invert the return value if we have to */
   if (invert)
+    exec_result = (exec_result == EXECUTION_SUCCESS)
+		    ? EXECUTION_FAILURE
+		    : EXECUTION_SUCCESS;
+
+#if defined (DPAREN_ARITHMETIC) || defined (COND_COMMAND)
+  /* This is where we set PIPESTATUS from the exit status of the appropriate
+     compound commands (the ones that look enough like simple commands to
+     cause confusion).  We might be able to optimize by not doing this if
+     subshell_environment != 0. */
+  switch (command->type)
     {
-      if (exec_result == EXECUTION_SUCCESS)
-   exec_result = EXECUTION_FAILURE;
-      else
-   exec_result = EXECUTION_SUCCESS;
+#  if defined (DPAREN_ARITHMETIC)
+    case cm_arith:
+#  endif
+#  if defined (COND_COMMAND)
+    case cm_cond:
+#  endif
+      set_pipestatus_from_exit (exec_result);
+      break;
     }
+#endif
 
   last_command_exit_value = exec_result;
   run_pending_traps ();
+#if 0
+  if (running_trap == 0)
+#endif
+    currently_executing_command = (COMMAND *)NULL;
 
-/*  fprintf(stderr, "Execute_command_internal: cm_simple %s rc=%d -- %d\n",make_command_string(command),   last_command_exit_value, __LINE__); fflush(stderr);*/
   return (last_command_exit_value);
 }
 
-execute_command_internal (command, asynchronous, pipe_in, pipe_out,
-           fds_to_close)
+#if defined (COMMAND_TIMING)
+
+#if defined (HAVE_GETRUSAGE) && defined (HAVE_GETTIMEOFDAY)
+extern struct timeval *difftimeval __P((struct timeval *, struct timeval *, struct timeval *));
+extern struct timeval *addtimeval __P((struct timeval *, struct timeval *, struct timeval *));
+extern int timeval_to_cpu __P((struct timeval *, struct timeval *, struct timeval *));
+#endif
+
+#define POSIX_TIMEFORMAT "real %2R\nuser %2U\nsys %2S"
+#define BASH_TIMEFORMAT  "\nreal\t%3lR\nuser\t%3lU\nsys\t%3lS"
+
+static const int precs[] = { 0, 100, 10, 1 };
+
+#if defined (HAVE_LOCALE_H) && defined (HAVE_LOCALECONV)
+static int
+decpoint ()
+{
+  struct lconv *lv;
+
+  lv = localeconv ();
+  return (lv && lv->decimal_point && lv->decimal_point[0]) ? lv->decimal_point[0] : '.';
+}
+#else
+#  define decpoint() '.'
+#endif
+
+/* Expand one `%'-prefixed escape sequence from a time format string. */
+static int
+mkfmt (buf, prec, lng, sec, sec_fraction)
+     char *buf;
+     int prec, lng;
+     time_t sec;
+     int sec_fraction;
+{
+  time_t min;
+  char abuf[INT_STRLEN_BOUND(time_t) + 1];
+  int ind, aind;
+
+  ind = 0;
+  abuf[sizeof(abuf) - 1] = '\0';
+
+  /* If LNG is non-zero, we want to decompose SEC into minutes and seconds. */
+  if (lng)
+    {
+      min = sec / 60;
+      sec %= 60;
+      aind = sizeof(abuf) - 2;
+      do
+	abuf[aind--] = (min % 10) + '0';
+      while (min /= 10);
+      aind++;
+      while (abuf[aind])
+	buf[ind++] = abuf[aind++];
+      buf[ind++] = 'm';
+    }
+
+  /* Now add the seconds. */
+  aind = sizeof (abuf) - 2;
+  do
+    abuf[aind--] = (sec % 10) + '0';
+  while (sec /= 10);
+  aind++;
+  while (abuf[aind])
+    buf[ind++] = abuf[aind++];
+
+  /* We want to add a decimal point and PREC places after it if PREC is
+     nonzero.  PREC is not greater than 3.  SEC_FRACTION is between 0
+     and 999. */
+  if (prec != 0)
+    {
+      buf[ind++] = decpoint ();
+      for (aind = 1; aind <= prec; aind++)
+	{
+	  buf[ind++] = (sec_fraction / precs[aind]) + '0';
+	  sec_fraction %= precs[aind];
+	}
+    }
+
+  if (lng)
+    buf[ind++] = 's';
+  buf[ind] = '\0';
+
+  return (ind);
+}
+
+/* Interpret the format string FORMAT, interpolating the following escape
+   sequences:
+		%[prec][l][RUS]
+
+   where the optional `prec' is a precision, meaning the number of
+   characters after the decimal point, the optional `l' means to format
+   using minutes and seconds (MMmNN[.FF]s), like the `times' builtin',
+   and the last character is one of
+   
+		R	number of seconds of `real' time
+		U	number of seconds of `user' time
+		S	number of seconds of `system' time
+
+   An occurrence of `%%' in the format string is translated to a `%'.  The
+   result is printed to FP, a pointer to a FILE.  The other variables are
+   the seconds and thousandths of a second of real, user, and system time,
+   resectively. */
+static void
+print_formatted_time (fp, format, rs, rsf, us, usf, ss, ssf, cpu)
+     FILE *fp;
+     char *format;
+     time_t rs;
+     int rsf;
+     time_t us;
+     int usf;
+     time_t ss;
+     int ssf, cpu;
+{
+  int prec, lng, len;
+  char *str, *s, ts[INT_STRLEN_BOUND (time_t) + sizeof ("mSS.FFFF")];
+  time_t sum;
+  int sum_frac;
+  int sindex, ssize;
+
+  len = strlen (format);
+  ssize = (len + 64) - (len % 64);
+  str = (char *)xmalloc (ssize);
+  sindex = 0;
+
+  for (s = format; *s; s++)
+    {
+      if (*s != '%' || s[1] == '\0')
+	{
+	  RESIZE_MALLOCED_BUFFER (str, sindex, 1, ssize, 64);
+	  str[sindex++] = *s;
+	}
+      else if (s[1] == '%')
+	{
+	  s++;
+	  RESIZE_MALLOCED_BUFFER (str, sindex, 1, ssize, 64);
+	  str[sindex++] = *s;
+	}
+      else if (s[1] == 'P')
+	{
+	  s++;
+#if 0
+	  /* clamp CPU usage at 100% */
+	  if (cpu > 10000)
+	    cpu = 10000;
+#endif
+	  sum = cpu / 100;
+	  sum_frac = (cpu % 100) * 10;
+	  len = mkfmt (ts, 2, 0, sum, sum_frac);
+	  RESIZE_MALLOCED_BUFFER (str, sindex, len, ssize, 64);
+	  strcpy (str + sindex, ts);
+	  sindex += len;
+	}
+      else
+	{
+	  prec = 3;	/* default is three places past the decimal point. */
+	  lng = 0;	/* default is to not use minutes or append `s' */
+	  s++;
+	  if (DIGIT (*s))		/* `precision' */
+	    {
+	      prec = *s++ - '0';
+	      if (prec > 3) prec = 3;
+	    }
+	  if (*s == 'l')		/* `length extender' */
+	    {
+	      lng = 1;
+	      s++;
+	    }
+	  if (*s == 'R' || *s == 'E')
+	    len = mkfmt (ts, prec, lng, rs, rsf);
+	  else if (*s == 'U')
+	    len = mkfmt (ts, prec, lng, us, usf);
+	  else if (*s == 'S')
+	    len = mkfmt (ts, prec, lng, ss, ssf);
+	  else
+	    {
+	      internal_error (_("TIMEFORMAT: `%c': invalid format character"), *s);
+	      free (str);
+	      return;
+	    }
+	  RESIZE_MALLOCED_BUFFER (str, sindex, len, ssize, 64);
+	  strcpy (str + sindex, ts);
+	  sindex += len;
+	}
+    }
+
+  str[sindex] = '\0';
+  fprintf (fp, "%s\n", str);
+  fflush (fp);
+
+  free (str);
+}
+
+static int
+time_command (command, asynchronous, pipe_in, pipe_out, fds_to_close)
+     COMMAND *command;
+     int asynchronous, pipe_in, pipe_out;
+     struct fd_bitmap *fds_to_close;
+{
+  int rv, posix_time, old_flags, nullcmd, code;
+  time_t rs, us, ss;
+  int rsf, usf, ssf;
+  int cpu;
+  char *time_format;
+  volatile procenv_t save_top_level;
+
+#if defined (HAVE_GETRUSAGE) && defined (HAVE_GETTIMEOFDAY)
+  struct timeval real, user, sys;
+  struct timeval before, after;
+#  if defined (HAVE_STRUCT_TIMEZONE)
+  struct timezone dtz;				/* posix doesn't define this */
+#  endif
+  struct rusage selfb, selfa, kidsb, kidsa;	/* a = after, b = before */
+#else
+#  if defined (HAVE_TIMES)
+  clock_t tbefore, tafter, real, user, sys;
+  struct tms before, after;
+#  endif
+#endif
+
+#if defined (HAVE_GETRUSAGE) && defined (HAVE_GETTIMEOFDAY)
+#  if defined (HAVE_STRUCT_TIMEZONE)
+  gettimeofday (&before, &dtz);
+#  else
+  gettimeofday (&before, (void *)NULL);
+#  endif /* !HAVE_STRUCT_TIMEZONE */
+  getrusage (RUSAGE_SELF, &selfb);
+  getrusage (RUSAGE_CHILDREN, &kidsb);
+#else
+#  if defined (HAVE_TIMES)
+  tbefore = times (&before);
+#  endif
+#endif
+
+  posix_time = command && (command->flags & CMD_TIME_POSIX);
+
+  nullcmd = (command == 0) || (command->type == cm_simple && command->value.Simple->words == 0 && command->value.Simple->redirects == 0);
+  if (posixly_correct && nullcmd)
+    {
+#if defined (HAVE_GETRUSAGE)
+      selfb.ru_utime.tv_sec = kidsb.ru_utime.tv_sec = selfb.ru_stime.tv_sec = kidsb.ru_stime.tv_sec = 0;
+      selfb.ru_utime.tv_usec = kidsb.ru_utime.tv_usec = selfb.ru_stime.tv_usec = kidsb.ru_stime.tv_usec = 0;
+      before.tv_sec = shell_start_time;
+      before.tv_usec = 0;
+#else
+      before.tms_utime = before.tms_stime = before.tms_cutime = before.tms_cstime = 0;
+      tbefore = shell_start_time;
+#endif
+    }
+
+  old_flags = command->flags;
+  COPY_PROCENV (top_level, save_top_level);
+  command->flags &= ~(CMD_TIME_PIPELINE|CMD_TIME_POSIX);
+  code = setjmp_nosigs (top_level);
+  if (code == NOT_JUMPED)
+    rv = execute_command_internal (command, asynchronous, pipe_in, pipe_out, fds_to_close);
+  command->flags = old_flags;
+  COPY_PROCENV (save_top_level, top_level);
+
+  rs = us = ss = 0;
+  rsf = usf = ssf = cpu = 0;
+
+#if defined (HAVE_GETRUSAGE) && defined (HAVE_GETTIMEOFDAY)
+#  if defined (HAVE_STRUCT_TIMEZONE)
+  gettimeofday (&after, &dtz);
+#  else
+  gettimeofday (&after, (void *)NULL);
+#  endif /* !HAVE_STRUCT_TIMEZONE */
+  getrusage (RUSAGE_SELF, &selfa);
+  getrusage (RUSAGE_CHILDREN, &kidsa);
+
+  difftimeval (&real, &before, &after);
+  timeval_to_secs (&real, &rs, &rsf);
+
+  addtimeval (&user, difftimeval(&after, &selfb.ru_utime, &selfa.ru_utime),
+		     difftimeval(&before, &kidsb.ru_utime, &kidsa.ru_utime));
+  timeval_to_secs (&user, &us, &usf);
+
+  addtimeval (&sys, difftimeval(&after, &selfb.ru_stime, &selfa.ru_stime),
+		    difftimeval(&before, &kidsb.ru_stime, &kidsa.ru_stime));
+  timeval_to_secs (&sys, &ss, &ssf);
+
+  cpu = timeval_to_cpu (&real, &user, &sys);
+#else
+#  if defined (HAVE_TIMES)
+  tafter = times (&after);
+
+  real = tafter - tbefore;
+  clock_t_to_secs (real, &rs, &rsf);
+
+  user = (after.tms_utime - before.tms_utime) + (after.tms_cutime - before.tms_cutime);
+  clock_t_to_secs (user, &us, &usf);
+
+  sys = (after.tms_stime - before.tms_stime) + (after.tms_cstime - before.tms_cstime);
+  clock_t_to_secs (sys, &ss, &ssf);
+
+  cpu = (real == 0) ? 0 : ((user + sys) * 10000) / real;
+
+#  else
+  rs = us = ss = 0;
+  rsf = usf = ssf = cpu = 0;
+#  endif
+#endif
+
+  if (posix_time)
+    time_format = POSIX_TIMEFORMAT;
+  else if ((time_format = get_string_value ("TIMEFORMAT")) == 0)
+    {
+      if (posixly_correct && nullcmd)
+	time_format = "user\t%2lU\nsys\t%2lS";
+      else
+	time_format = BASH_TIMEFORMAT;
+    }
+  if (time_format && *time_format)
+    print_formatted_time (stderr, time_format, rs, rsf, us, usf, ss, ssf, cpu);
+
+  if (code)
+    sh_longjmp (top_level, code);
+
+  return rv;
+}
+#endif /* COMMAND_TIMING */
+
+/* Execute a command that's supposed to be in a subshell.  This must be
+   called after make_child and we must be running in the child process.
+   The caller will return or exit() immediately with the value this returns. */
+static int
+execute_in_subshell (command, asynchronous, pipe_in, pipe_out, fds_to_close)
      COMMAND *command;
      int asynchronous;
      int pipe_in, pipe_out;
      struct fd_bitmap *fds_to_close;
 {
-   return(execute_command_internal_from_thread(command, asynchronous, pipe_in, pipe_out, fds_to_close, 0));
-}
+  int user_subshell, return_code, function_value, should_redir_stdin, invert;
+  int ois, user_coproc;
+  int result;
+  volatile COMMAND *tcom;
 
+  USE_VAR(user_subshell);
+  USE_VAR(user_coproc);
+  USE_VAR(invert);
+  USE_VAR(tcom);
+  USE_VAR(asynchronous);
 
+  subshell_level++;
+  should_redir_stdin = (asynchronous && (command->flags & CMD_STDIN_REDIR) &&
+			  pipe_in == NO_PIPE &&
+			  stdin_redirects (command->redirects) == 0);
+
+  invert = (command->flags & CMD_INVERT_RETURN) != 0;
+  user_subshell = command->type == cm_subshell || ((command->flags & CMD_WANT_SUBSHELL) != 0);
+  user_coproc = command->type == cm_coproc;
+
+  command->flags &= ~(CMD_FORCE_SUBSHELL | CMD_WANT_SUBSHELL | CMD_INVERT_RETURN);
+
+  /* If a command is asynchronous in a subshell (like ( foo ) & or
+     the special case of an asynchronous GROUP command where the
+     the subshell bit is turned on down in case cm_group: below),
+     turn off `asynchronous', so that two subshells aren't spawned.
+     XXX - asynchronous used to be set to 0 in this block, but that
+     means that setup_async_signals was never run.  Now it's set to
+     0 after subshell_environment is set appropriately and setup_async_signals
+     is run.
+
+     This seems semantically correct to me.  For example,
+     ( foo ) & seems to say ``do the command `foo' in a subshell
+     environment, but don't wait for that subshell to finish'',
+     and "{ foo ; bar ; } &" seems to me to be like functions or
+     builtins in the background, which executed in a subshell
+     environment.  I just don't see the need to fork two subshells. */
+
+  /* Don't fork again, we are already in a subshell.  A `doubly
+     async' shell is not interactive, however. */
+  if (asynchronous)
+    {
+#if defined (JOB_CONTROL)
+      /* If a construct like ( exec xxx yyy ) & is given while job
+	 control is active, we want to prevent exec from putting the
+	 subshell back into the original process group, carefully
+	 undoing all the work we just did in make_child. */
+      original_pgrp = -1;
+#endif /* JOB_CONTROL */
+      ois = interactive_shell;
+      interactive_shell = 0;
+      /* This test is to prevent alias expansion by interactive shells that
+	 run `(command) &' but to allow scripts that have enabled alias
+	 expansion with `shopt -s expand_alias' to continue to expand
+	 aliases. */
+      if (ois != interactive_shell)
+	expand_aliases = 0;
+    }
+
+  /* Subshells are neither login nor interactive. */
+  login_shell = interactive = 0;
+
+  if (user_subshell)
+    subshell_environment = SUBSHELL_PAREN;	/* XXX */
+  else
+    {
+      subshell_environment = 0;			/* XXX */
+      if (asynchronous)
+	subshell_environment |= SUBSHELL_ASYNC;
+      if (pipe_in != NO_PIPE || pipe_out != NO_PIPE)
+	subshell_environment |= SUBSHELL_PIPE;
+      if (user_coproc)
+	subshell_environment |= SUBSHELL_COPROC;
+    }
+
+  reset_terminating_signals ();		/* in sig.c */
+  /* Cancel traps, in trap.c. */
+  /* Reset the signal handlers in the child, but don't free the
+     trap strings.  Set a flag noting that we have to free the
+     trap strings if we run trap to change a signal disposition. */
+  reset_signal_handlers ();
+  subshell_environment |= SUBSHELL_RESETTRAP;
+
+  /* Make sure restore_original_signals doesn't undo the work done by
+     make_child to ensure that asynchronous children are immune to SIGINT
+     and SIGQUIT.  Turn off asynchronous to make sure more subshells are
+     not spawned. */
+  if (asynchronous)
+    {
+      setup_async_signals ();
+      asynchronous = 0;
+    }
 
 #if defined (JOB_CONTROL)
-#  define REAP() \
-   do \
-     { \
-       if (!interactive_shell) \
-         reap_dead_jobs (); \
-     } \
-   while (0)
-#else /* !JOB_CONTROL */
-#  define REAP() \
-   do \
-     { \
-       if (!interactive_shell) \
-         cleanup_dead_jobs (); \
-     } \
-   while (0)
-#endif /* !JOB_CONTROL */
+  set_sigchld_handler ();
+#endif /* JOB_CONTROL */
 
+  set_sigint_handler ();
+
+#if defined (JOB_CONTROL)
+  /* Delete all traces that there were any jobs running.  This is
+     only for subshells. */
+  without_job_control ();
+#endif /* JOB_CONTROL */
+
+  if (fds_to_close)
+    close_fd_bitmap (fds_to_close);
+
+  do_piping (pipe_in, pipe_out);
+
+#if defined (COPROCESS_SUPPORT)
+  coproc_closeall ();
+#endif
+
+  /* If this is a user subshell, set a flag if stdin was redirected.
+     This is used later to decide whether to redirect fd 0 to
+     /dev/null for async commands in the subshell.  This adds more
+     sh compatibility, but I'm not sure it's the right thing to do.
+     Note that an input pipe to a compound command suffices to inhibit
+     the implicit /dev/null redirection for asynchronous commands
+     executed as part of that compound command. */
+  if (user_subshell)
+    {
+      stdin_redir = stdin_redirects (command->redirects) || pipe_in != NO_PIPE;
+#if 0
+      restore_default_signal (EXIT_TRAP);	/* XXX - reset_signal_handlers above */
+#endif
+    }
+  else if (shell_control_structure (command->type) && pipe_in != NO_PIPE)
+    stdin_redir = 1;
+
+  /* If this is an asynchronous command (command &), we want to
+     redirect the standard input from /dev/null in the absence of
+     any specific redirection involving stdin. */
+  if (should_redir_stdin && stdin_redir == 0)
+    async_redirect_stdin ();
+
+  /* Do redirections, then dispose of them before recursive call. */
+  if (command->redirects)
+    {
+      if (do_redirections (command->redirects, RX_ACTIVE) != 0)
+	exit (invert ? EXECUTION_SUCCESS : EXECUTION_FAILURE);
+
+      dispose_redirects (command->redirects);
+      command->redirects = (REDIRECT *)NULL;
+    }
+
+  if (command->type == cm_subshell)
+    tcom = command->value.Subshell->command;
+  else if (user_coproc)
+    tcom = command->value.Coproc->command;
+  else
+    tcom = command;
+
+  if (command->flags & CMD_TIME_PIPELINE)
+    tcom->flags |= CMD_TIME_PIPELINE;
+  if (command->flags & CMD_TIME_POSIX)
+    tcom->flags |= CMD_TIME_POSIX;
+  
+  /* Make sure the subshell inherits any CMD_IGNORE_RETURN flag. */
+  if ((command->flags & CMD_IGNORE_RETURN) && tcom != command)
+    tcom->flags |= CMD_IGNORE_RETURN;
+
+  /* If this is a simple command, tell execute_disk_command that it
+     might be able to get away without forking and simply exec.
+     This means things like ( sleep 10 ) will only cause one fork.
+     If we're timing the command or inverting its return value, however,
+     we cannot do this optimization. */
+  if ((user_subshell || user_coproc) && (tcom->type == cm_simple || tcom->type == cm_subshell) &&
+      ((tcom->flags & CMD_TIME_PIPELINE) == 0) &&
+      ((tcom->flags & CMD_INVERT_RETURN) == 0))
+    {
+      tcom->flags |= CMD_NO_FORK;
+      if (tcom->type == cm_simple)
+	tcom->value.Simple->flags |= CMD_NO_FORK;
+    }
+
+  invert = (tcom->flags & CMD_INVERT_RETURN) != 0;
+  tcom->flags &= ~CMD_INVERT_RETURN;
+
+  result = setjmp_nosigs (top_level);
+
+  /* If we're inside a function while executing this subshell, we
+     need to handle a possible `return'. */
+  function_value = 0;
+  if (return_catch_flag)
+    function_value = setjmp_nosigs (return_catch);
+
+  /* If we're going to exit the shell, we don't want to invert the return
+     status. */
+  if (result == EXITPROG)
+    invert = 0, return_code = last_command_exit_value;
+  else if (result)
+    return_code = (last_command_exit_value == EXECUTION_SUCCESS) ? EXECUTION_FAILURE : last_command_exit_value;
+  else if (function_value)
+    return_code = return_catch_value;
+  else
+    return_code = execute_command_internal ((COMMAND *)tcom, asynchronous, NO_PIPE, NO_PIPE, fds_to_close);
+
+  /* If we are asked to, invert the return value. */
+  if (invert)
+    return_code = (return_code == EXECUTION_SUCCESS) ? EXECUTION_FAILURE
+						     : EXECUTION_SUCCESS;
+
+  /* If we were explicitly placed in a subshell with (), we need
+     to do the `shell cleanup' things, such as running traps[0]. */
+  if (user_subshell && signal_is_trapped (0))
+    {
+      last_command_exit_value = return_code;
+      return_code = run_exit_trap ();
+    }
+
+#if 0
+  subshell_level--;		/* don't bother, caller will just exit */
+#endif
+  return (return_code);
+  /* NOTREACHED */
+}
+
+#if defined (COPROCESS_SUPPORT)
+#define COPROC_MAX	16
+
+typedef struct cpelement
+  {
+    struct cpelement *next;
+    struct coproc *coproc;
+  }
+cpelement_t;
+    
+typedef struct cplist
+  {
+    struct cpelement *head;
+    struct cpelement *tail;
+    int ncoproc;
+    int lock;
+  }
+cplist_t;
+
+static struct cpelement *cpe_alloc __P((struct coproc *));
+static void cpe_dispose __P((struct cpelement *));
+static struct cpelement *cpl_add __P((struct coproc *));
+static struct cpelement *cpl_delete __P((pid_t));
+static void cpl_reap __P((void));
+static void cpl_flush __P((void));
+static void cpl_closeall __P((void));
+static struct cpelement *cpl_search __P((pid_t));
+static struct cpelement *cpl_searchbyname __P((const char *));
+static void cpl_prune __P((void));
+
+static void coproc_free __P((struct coproc *));
+
+/* Will go away when there is fully-implemented support for multiple coprocs. */
+Coproc sh_coproc = { 0, NO_PID, -1, -1, 0, 0, 0, 0, 0 };
+
+cplist_t coproc_list = {0, 0, 0};
+
+/* Functions to manage the list of coprocs */
+
+static struct cpelement *
+cpe_alloc (cp)
+     Coproc *cp;
+{
+  struct cpelement *cpe;
+
+  cpe = (struct cpelement *)xmalloc (sizeof (struct cpelement));
+  cpe->coproc = cp;
+  cpe->next = (struct cpelement *)0;
+  return cpe;
+}
+
+static void
+cpe_dispose (cpe)
+      struct cpelement *cpe;
+{
+  free (cpe);
+}
+
+static struct cpelement *
+cpl_add (cp)
+     Coproc *cp;
+{
+  struct cpelement *cpe;
+
+  cpe = cpe_alloc (cp);
+
+  if (coproc_list.head == 0)
+    {
+      coproc_list.head = coproc_list.tail = cpe;
+      coproc_list.ncoproc = 0;			/* just to make sure */
+    }
+  else
+    {
+      coproc_list.tail->next = cpe;
+      coproc_list.tail = cpe;
+    }
+  coproc_list.ncoproc++;
+
+  return cpe;
+}
+
+static struct cpelement *
+cpl_delete (pid)
+     pid_t pid;
+{
+  struct cpelement *prev, *p;
+
+  for (prev = p = coproc_list.head; p; prev = p, p = p->next)
+    if (p->coproc->c_pid == pid)
+      {
+        prev->next = p->next;	/* remove from list */
+        break;
+      }
+
+  if (p == 0)
+    return 0;		/* not found */
+
+#if defined (DEBUG)
+  itrace("cpl_delete: deleting %d", pid);
+#endif
+
+  /* Housekeeping in the border cases. */
+  if (p == coproc_list.head)
+    coproc_list.head = coproc_list.head->next;
+  else if (p == coproc_list.tail)
+    coproc_list.tail = prev;
+
+  coproc_list.ncoproc--;
+  if (coproc_list.ncoproc == 0)
+    coproc_list.head = coproc_list.tail = 0;
+  else if (coproc_list.ncoproc == 1)
+    coproc_list.tail = coproc_list.head;		/* just to make sure */
+
+  return (p);
+}
+
+static void
+cpl_reap ()
+{
+  struct cpelement *p, *next, *nh, *nt;
+
+  /* Build a new list by removing dead coprocs and fix up the coproc_list
+     pointers when done. */
+  nh = nt = next = (struct cpelement *)0;
+  for (p = coproc_list.head; p; p = next)
+    {
+      next = p->next;
+      if (p->coproc->c_flags & COPROC_DEAD)
+	{
+	  coproc_list.ncoproc--;	/* keep running count, fix up pointers later */
+
+#if defined (DEBUG)
+	  itrace("cpl_reap: deleting %d", p->coproc->c_pid);
+#endif
+
+	  coproc_dispose (p->coproc);
+	  cpe_dispose (p);
+	}
+      else if (nh == 0)
+	nh = nt = p;
+      else
+	{
+	  nt->next = p;
+	  nt = nt->next;
+	}
+    }
+
+  if (coproc_list.ncoproc == 0)
+    coproc_list.head = coproc_list.tail = 0;
+  else
+    {
+      if (nt)
+        nt->next = 0;
+      coproc_list.head = nh;
+      coproc_list.tail = nt;
+      if (coproc_list.ncoproc == 1)
+	coproc_list.tail = coproc_list.head;		/* just to make sure */  
+    }
+}
+
+/* Clear out the list of saved statuses */
+static void
+cpl_flush ()
+{
+  struct cpelement *cpe, *p;
+
+  for (cpe = coproc_list.head; cpe; )
+    {
+      p = cpe;
+      cpe = cpe->next;
+
+      coproc_dispose (p->coproc);
+      cpe_dispose (p);
+    }
+
+  coproc_list.head = coproc_list.tail = 0;
+  coproc_list.ncoproc = 0;
+}
+
+static void
+cpl_closeall ()
+{
+  struct cpelement *cpe;
+
+  for (cpe = coproc_list.head; cpe; cpe = cpe->next)
+    coproc_close (cpe->coproc);
+}
+
+static void
+cpl_fdchk (fd)
+     int fd;
+{
+  struct cpelement *cpe;
+
+  for (cpe = coproc_list.head; cpe; cpe = cpe->next)
+    coproc_checkfd (cpe->coproc, fd);
+}
+
+/* Search for PID in the list of coprocs; return the cpelement struct if
+   found.  If not found, return NULL. */
+static struct cpelement *
+cpl_search (pid)
+     pid_t pid;
+{
+  struct cpelement *cpe;
+
+  for (cpe = coproc_list.head ; cpe; cpe = cpe->next)
+    if (cpe->coproc->c_pid == pid)
+      return cpe;
+  return (struct cpelement *)NULL;
+}
+
+/* Search for the coproc named NAME in the list of coprocs; return the
+   cpelement struct if found.  If not found, return NULL. */
+static struct cpelement *
+cpl_searchbyname (name)
+     const char *name;
+{
+  struct cpelement *cp;
+
+  for (cp = coproc_list.head ; cp; cp = cp->next)
+    if (STREQ (cp->coproc->c_name, name))
+      return cp;
+  return (struct cpelement *)NULL;
+}
+
+#if 0
+static void
+cpl_prune ()
+{
+  struct cpelement *cp;
+
+  while (coproc_list.head && coproc_list.ncoproc > COPROC_MAX)
+    {
+      cp = coproc_list.head;
+      coproc_list.head = coproc_list.head->next;
+      coproc_dispose (cp->coproc);
+      cpe_dispose (cp);
+      coproc_list.ncoproc--;
+    }
+}
+#endif
+
+/* These currently use a single global "shell coproc" but are written in a
+   way to not preclude additional coprocs later (using the list management
+   package above). */
+
+struct coproc *
+getcoprocbypid (pid)
+     pid_t pid;
+{
+#if MULTIPLE_COPROCS
+  struct cpelement *p;
+
+  p = cpl_search (pid);
+  return (p ? p->coproc : 0);
+#else
+  return (pid == sh_coproc.c_pid ? &sh_coproc : 0);
+#endif
+}
+
+struct coproc *
+getcoprocbyname (name)
+     const char *name;
+{
+#if MULTIPLE_COPROCS
+  struct cpelement *p;
+
+  p = cpl_searchbyname (name);
+  return (p ? p->coproc : 0);
+#else
+  return ((sh_coproc.c_name && STREQ (sh_coproc.c_name, name)) ? &sh_coproc : 0);
+#endif
+}
+
+void
+coproc_init (cp)
+     struct coproc *cp;
+{
+  cp->c_name = 0;
+  cp->c_pid = NO_PID;
+  cp->c_rfd = cp->c_wfd = -1;
+  cp->c_rsave = cp->c_wsave = -1;
+  cp->c_flags = cp->c_status = cp->c_lock = 0;
+}
+
+struct coproc *
+coproc_alloc (name, pid)
+     char *name;
+     pid_t pid;
+{
+  struct coproc *cp;
+
+#if MULTIPLE_COPROCS
+  cp = (struct coproc *)xmalloc (sizeof (struct coproc));
+#else
+  cp = &sh_coproc;
+#endif
+  coproc_init (cp);
+  cp->c_lock = 2;
+
+  cp->c_pid = pid;
+  cp->c_name = savestring (name);
+#if MULTIPLE_COPROCS
+  cpl_add (cp);
+#endif
+  cp->c_lock = 0;
+  return (cp);
+}
+
+static void
+coproc_free (cp)
+     struct coproc *cp;
+{
+  free (cp);
+}
+
+void
+coproc_dispose (cp)
+     struct coproc *cp;
+{
+  sigset_t set, oset;
+
+  if (cp == 0)
+    return;
+
+  BLOCK_SIGNAL (SIGCHLD, set, oset);
+  cp->c_lock = 3;
+  coproc_unsetvars (cp);
+  FREE (cp->c_name);
+  coproc_close (cp);
+#if MULTIPLE_COPROCS
+  coproc_free (cp);
+#else
+  coproc_init (cp);
+  cp->c_lock = 0;
+#endif
+  UNBLOCK_SIGNAL (oset);
+}
+
+/* Placeholder for now.  Will require changes for multiple coprocs */
+void
+coproc_flush ()
+{
+#if MULTIPLE_COPROCS
+  cpl_flush ();
+#else
+  coproc_dispose (&sh_coproc);
+#endif
+}
+
+void
+coproc_close (cp)
+     struct coproc *cp;
+{
+  if (cp->c_rfd >= 0)
+    {
+      close (cp->c_rfd);
+      cp->c_rfd = -1;
+    }
+  if (cp->c_wfd >= 0)
+    {
+      close (cp->c_wfd);
+      cp->c_wfd = -1;
+    }
+  cp->c_rsave = cp->c_wsave = -1;
+}
+
+void
+coproc_closeall ()
+{
+#if MULTIPLE_COPROCS
+  cpl_closeall ();
+#else
+  coproc_close (&sh_coproc);	/* XXX - will require changes for multiple coprocs */
+#endif
+}
+
+void
+coproc_reap ()
+{
+#if MULTIPLE_COPROCS
+  cpl_reap ();
+#else
+  struct coproc *cp;
+
+  cp = &sh_coproc;		/* XXX - will require changes for multiple coprocs */
+  if (cp && (cp->c_flags & COPROC_DEAD))
+    coproc_dispose (cp);
+#endif
+}
+
+void
+coproc_rclose (cp, fd)
+     struct coproc *cp;
+     int fd;
+{
+  if (cp->c_rfd >= 0 && cp->c_rfd == fd)
+    {
+      close (cp->c_rfd);
+      cp->c_rfd = -1;
+    }
+}
+
+void
+coproc_wclose (cp, fd)
+     struct coproc *cp;
+     int fd;
+{
+  if (cp->c_wfd >= 0 && cp->c_wfd == fd)
+    {
+      close (cp->c_wfd);
+      cp->c_wfd = -1;
+    }
+}
+
+void
+coproc_checkfd (cp, fd)
+     struct coproc *cp;
+     int fd;
+{
+  int update;
+
+  update = 0;
+  if (cp->c_rfd >= 0 && cp->c_rfd == fd)
+    update = cp->c_rfd = -1;
+  if (cp->c_wfd >= 0 && cp->c_wfd == fd)
+    update = cp->c_wfd = -1;
+  if (update)
+    coproc_setvars (cp);
+}
+
+void
+coproc_fdchk (fd)
+     int fd;
+{
+#if MULTIPLE_COPROCS
+  cpl_fdchk (fd);
+#else
+  coproc_checkfd (&sh_coproc, fd);
+#endif
+}
+
+void
+coproc_fdclose (cp, fd)
+     struct coproc *cp;
+     int fd;
+{
+  coproc_rclose (cp, fd);
+  coproc_wclose (cp, fd);
+  coproc_setvars (cp);
+}
+
+void
+coproc_fdsave (cp)
+     struct coproc *cp;
+{
+  cp->c_rsave = cp->c_rfd;
+  cp->c_wsave = cp->c_wfd;
+}
+
+void
+coproc_fdrestore (cp)
+     struct coproc *cp;
+{
+  cp->c_rfd = cp->c_rsave;
+  cp->c_wfd = cp->c_wsave;
+}
+
+void
+coproc_pidchk (pid, status)
+     pid_t pid;
+     int status;
+{
+  struct coproc *cp;
+
+#if MULTIPLE_COPROCS
+  struct cpelement *cpe;
+
+  cpe = cpl_delete (pid);
+  cp = cpe ? cpe->coproc : 0;
+#else
+  cp = getcoprocbypid (pid);
+#endif
+  if (cp)
+    {
+      cp->c_lock = 4;
+      cp->c_status = status;
+      cp->c_flags |= COPROC_DEAD;
+      cp->c_flags &= ~COPROC_RUNNING;
+      /* Don't dispose the coproc or unset the COPROC_XXX variables because
+	 this is executed in a signal handler context.  Wait until coproc_reap
+	 takes care of it. */
+      cp->c_lock = 0;
+    }
+}
+
+void
+coproc_setvars (cp)
+     struct coproc *cp;
+{
+  SHELL_VAR *v;
+  char *namevar, *t;
+  int l;
+  WORD_DESC w;
+#if defined (ARRAY_VARS)
+  arrayind_t ind;
+#endif
+
+  if (cp->c_name == 0)
+    return;
+
+  /* We could do more here but right now we only check the name, warn if it's
+     not a valid identifier, and refuse to create variables with invalid names
+     if a coproc with such a name is supplied. */
+  w.word = cp->c_name;
+  w.flags = 0;
+  if (check_identifier (&w, 1) == 0)
+    return;
+
+  l = strlen (cp->c_name);
+  namevar = xmalloc (l + 16);
+
+#if defined (ARRAY_VARS)
+  v = find_variable (cp->c_name);
+
+  /* This is the same code as in find_or_make_array_variable */
+  if (v == 0)
+    {
+      v = find_variable_nameref_for_create (cp->c_name, 1);
+      if (v == INVALID_NAMEREF_VALUE)
+	return;
+      if (v && nameref_p (v))
+	{
+	  free (cp->c_name);
+	  cp->c_name = savestring (nameref_cell (v));
+	  v = make_new_array_variable (cp->c_name);	  
+	}
+    }
+
+  if (v && (readonly_p (v) || noassign_p (v)))
+    {
+      if (readonly_p (v))
+	err_readonly (cp->c_name);
+      return;
+    }
+  if (v == 0)
+    v = make_new_array_variable (cp->c_name);
+  if (array_p (v) == 0)
+    v = convert_var_to_array (v);
+
+  t = itos (cp->c_rfd);
+  ind = 0;
+  v = bind_array_variable (cp->c_name, ind, t, 0);
+  free (t);
+
+  t = itos (cp->c_wfd);
+  ind = 1;
+  bind_array_variable (cp->c_name, ind, t, 0);
+  free (t);
+#else
+  sprintf (namevar, "%s_READ", cp->c_name);
+  t = itos (cp->c_rfd);
+  bind_variable (namevar, t, 0);
+  free (t);
+  sprintf (namevar, "%s_WRITE", cp->c_name);
+  t = itos (cp->c_wfd);
+  bind_variable (namevar, t, 0);
+  free (t);
+#endif
+
+  sprintf (namevar, "%s_PID", cp->c_name);
+  t = itos (cp->c_pid);
+  bind_variable (namevar, t, 0);
+  free (t);
+
+  free (namevar);
+}
+
+void
+coproc_unsetvars (cp)
+     struct coproc *cp;
+{
+  int l;
+  char *namevar;
+
+  if (cp->c_name == 0)
+    return;
+
+  l = strlen (cp->c_name);
+  namevar = xmalloc (l + 16);
+
+  sprintf (namevar, "%s_PID", cp->c_name);
+  unbind_variable_noref (namevar);  
+
+#if defined (ARRAY_VARS)
+  check_unbind_variable (cp->c_name);
+#else
+  sprintf (namevar, "%s_READ", cp->c_name);
+  unbind_variable (namevar);
+  sprintf (namevar, "%s_WRITE", cp->c_name);
+  unbind_variable (namevar);
+#endif  
+
+  free (namevar);
+}
+
+static int
+execute_coproc (command, pipe_in, pipe_out, fds_to_close)
+     COMMAND *command;
+     int pipe_in, pipe_out;
+     struct fd_bitmap *fds_to_close;
+{
+  int rpipe[2], wpipe[2], estat, invert;
+  pid_t coproc_pid;
+  Coproc *cp;
+  char *tcmd;
+  sigset_t set, oset;
+
+  /* XXX -- can be removed after changes to handle multiple coprocs */
+#if !MULTIPLE_COPROCS
+  if (sh_coproc.c_pid != NO_PID)
+    internal_warning (_("execute_coproc: coproc [%d:%s] still exists"), sh_coproc.c_pid, sh_coproc.c_name);
+  coproc_init (&sh_coproc);
+#endif
+
+  invert = (command->flags & CMD_INVERT_RETURN) != 0;
+  command_string_index = 0;
+  tcmd = make_command_string (command);
+
+  sh_openpipe ((int *)&rpipe);	/* 0 = parent read, 1 = child write */
+  sh_openpipe ((int *)&wpipe); /* 0 = child read, 1 = parent write */
+
+  BLOCK_SIGNAL (SIGCHLD, set, oset);
+
+  coproc_pid = make_child (savestring (tcmd), 1);
+
+  if (coproc_pid == 0)
+    {
+      close (rpipe[0]);
+      close (wpipe[1]);
+
+      UNBLOCK_SIGNAL (oset);
+      estat = execute_in_subshell (command, 1, wpipe[0], rpipe[1], fds_to_close);
+
+      fflush (stdout);
+      fflush (stderr);
+
+      exit (estat);
+    }
+
+  close (rpipe[1]);
+  close (wpipe[0]);
+
+  /* XXX - possibly run Coproc->name through word expansion? */
+  cp = coproc_alloc (command->value.Coproc->name, coproc_pid);
+  cp->c_rfd = rpipe[0];
+  cp->c_wfd = wpipe[1];
+
+  SET_CLOSE_ON_EXEC (cp->c_rfd);
+  SET_CLOSE_ON_EXEC (cp->c_wfd);
+
+  coproc_setvars (cp);
+
+  UNBLOCK_SIGNAL (oset);
+
+#if 0
+  itrace ("execute_coproc: [%d] %s", coproc_pid, the_printed_command);
+#endif
+
+  close_pipes (pipe_in, pipe_out);
+#if defined (PROCESS_SUBSTITUTION) && defined (HAVE_DEV_FD)
+  unlink_fifo_list ();
+#endif
+  stop_pipeline (1, (COMMAND *)NULL);
+  DESCRIBE_PID (coproc_pid);
+  run_pending_traps ();
+
+  return (invert ? EXECUTION_FAILURE : EXECUTION_SUCCESS);
+}
+#endif
+
+static void
+restore_stdin (s)
+     int s;
+{
+  dup2 (s, 0);
+  close (s);
+}
+
+/* Catch-all cleanup function for lastpipe code for unwind-protects */
+static void
+lastpipe_cleanup (s)
+     int s;
+{
+  unfreeze_jobs_list ();
+}
+
+static int
+execute_pipeline (command, asynchronous, pipe_in, pipe_out, fds_to_close)
+     COMMAND *command;
+     int asynchronous, pipe_in, pipe_out;
+     struct fd_bitmap *fds_to_close;
+{
+  int prev, fildes[2], new_bitmap_size, dummyfd, ignore_return, exec_result;
+  int lstdin, lastpipe_flag, lastpipe_jid;
+  COMMAND *cmd;
+  struct fd_bitmap *fd_bitmap;
+  pid_t lastpid;
+
+#if defined (JOB_CONTROL)
+  sigset_t set, oset;
+  BLOCK_CHILD (set, oset);
+#endif /* JOB_CONTROL */
+
+  ignore_return = (command->flags & CMD_IGNORE_RETURN) != 0;
+
+  prev = pipe_in;
+  cmd = command;
+
+  while (cmd && cmd->type == cm_connection &&
+	 cmd->value.Connection && cmd->value.Connection->connector == '|')
+    {
+      /* Make a pipeline between the two commands. */
+      if (pipe (fildes) < 0)
+	{
+	  sys_error (_("pipe error"));
+#if defined (JOB_CONTROL)
+	  terminate_current_pipeline ();
+	  kill_current_pipeline ();
+	  UNBLOCK_CHILD (oset);
+#endif /* JOB_CONTROL */
+	  last_command_exit_value = EXECUTION_FAILURE;
+	  /* The unwind-protects installed below will take care
+	     of closing all of the open file descriptors. */
+	  throw_to_top_level ();
+	  return (EXECUTION_FAILURE);	/* XXX */
+	}
+
+      /* Here is a problem: with the new file close-on-exec
+	 code, the read end of the pipe (fildes[0]) stays open
+	 in the first process, so that process will never get a
+	 SIGPIPE.  There is no way to signal the first process
+	 that it should close fildes[0] after forking, so it
+	 remains open.  No SIGPIPE is ever sent because there
+	 is still a file descriptor open for reading connected
+	 to the pipe.  We take care of that here.  This passes
+	 around a bitmap of file descriptors that must be
+	 closed after making a child process in execute_simple_command. */
+
+      /* We need fd_bitmap to be at least as big as fildes[0].
+	 If fildes[0] is less than fds_to_close->size, then
+	 use fds_to_close->size. */
+      new_bitmap_size = (fildes[0] < fds_to_close->size)
+				? fds_to_close->size
+				: fildes[0] + 8;
+
+      fd_bitmap = new_fd_bitmap (new_bitmap_size);
+
+      /* Now copy the old information into the new bitmap. */
+      xbcopy ((char *)fds_to_close->bitmap, (char *)fd_bitmap->bitmap, fds_to_close->size);
+
+      /* And mark the pipe file descriptors to be closed. */
+      fd_bitmap->bitmap[fildes[0]] = 1;
+
+      /* In case there are pipe or out-of-processes errors, we
+	 want all these file descriptors to be closed when
+	 unwind-protects are run, and the storage used for the
+	 bitmaps freed up. */
+      begin_unwind_frame ("pipe-file-descriptors");
+      add_unwind_protect (dispose_fd_bitmap, fd_bitmap);
+      add_unwind_protect (close_fd_bitmap, fd_bitmap);
+      if (prev >= 0)
+	add_unwind_protect (close, prev);
+      dummyfd = fildes[1];
+      add_unwind_protect (close, dummyfd);
+
+#if defined (JOB_CONTROL)
+      add_unwind_protect (restore_signal_mask, &oset);
+#endif /* JOB_CONTROL */
+
+      if (ignore_return && cmd->value.Connection->first)
+	cmd->value.Connection->first->flags |= CMD_IGNORE_RETURN;
+      execute_command_internal (cmd->value.Connection->first, asynchronous,
+				prev, fildes[1], fd_bitmap);
+
+      if (prev >= 0)
+	close (prev);
+
+      prev = fildes[0];
+      close (fildes[1]);
+
+      dispose_fd_bitmap (fd_bitmap);
+      discard_unwind_frame ("pipe-file-descriptors");
+
+      cmd = cmd->value.Connection->second;
+    }
+
+  lastpid = last_made_pid;
+
+  /* Now execute the rightmost command in the pipeline.  */
+  if (ignore_return && cmd)
+    cmd->flags |= CMD_IGNORE_RETURN;
+
+  lastpipe_flag = 0;
+
+  begin_unwind_frame ("lastpipe-exec");
+  lstdin = -1;
+  /* If the `lastpipe' option is set with shopt, and job control is not
+     enabled, execute the last element of non-async pipelines in the
+     current shell environment. */
+  if (lastpipe_opt && job_control == 0 && asynchronous == 0 && pipe_out == NO_PIPE && prev > 0)
+    {
+      lstdin = move_to_high_fd (0, 1, -1);
+      if (lstdin > 0)
+	{
+	  do_piping (prev, pipe_out);
+	  prev = NO_PIPE;
+	  add_unwind_protect (restore_stdin, lstdin);
+	  lastpipe_flag = 1;
+	  freeze_jobs_list ();
+	  lastpipe_jid = stop_pipeline (0, (COMMAND *)NULL);	/* XXX */
+	  add_unwind_protect (lastpipe_cleanup, lastpipe_jid);
+	}
+      if (cmd)
+	cmd->flags |= CMD_LASTPIPE;
+    }	  
+  if (prev >= 0)
+    add_unwind_protect (close, prev);
+
+  exec_result = execute_command_internal (cmd, asynchronous, prev, pipe_out, fds_to_close);
+
+  if (lstdin > 0)
+    restore_stdin (lstdin);
+
+  if (prev >= 0)
+    close (prev);
+
+#if defined (JOB_CONTROL)
+  UNBLOCK_CHILD (oset);
+#endif
+
+  QUIT;
+
+  if (lastpipe_flag)
+    {
+#if defined (JOB_CONTROL)
+      if (INVALID_JOB (lastpipe_jid) == 0)
+        {
+          append_process (savestring (the_printed_command_except_trap), dollar_dollar_pid, exec_result, lastpipe_jid);
+          lstdin = wait_for (lastpid);
+        }
+      else
+        lstdin = wait_for_single_pid (lastpid, 0);		/* checks bgpids list */
+#else
+      lstdin = wait_for (lastpid);
+#endif
+
+#if defined (JOB_CONTROL)
+      /* If wait_for removes the job from the jobs table, use result of last
+	 command as pipeline's exit status as usual.  The jobs list can get
+	 frozen and unfrozen at inconvenient times if there are multiple pipelines
+	 running simultaneously. */
+      if (INVALID_JOB (lastpipe_jid) == 0)
+	exec_result = job_exit_status (lastpipe_jid);
+      else if (pipefail_opt)
+	exec_result = exec_result | lstdin;	/* XXX */
+      /* otherwise we use exec_result */
+        
+#endif
+      unfreeze_jobs_list ();
+    }
+
+  discard_unwind_frame ("lastpipe-exec");
+
+  return (exec_result);
+}
+
+static int
+execute_connection (command, asynchronous, pipe_in, pipe_out, fds_to_close)
+     COMMAND *command;
+     int asynchronous, pipe_in, pipe_out;
+     struct fd_bitmap *fds_to_close;
+{
+  COMMAND *tc, *second;
+  int ignore_return, exec_result, was_error_trap, invert;
+  volatile int save_line_number;
+
+  ignore_return = (command->flags & CMD_IGNORE_RETURN) != 0;
+
+  switch (command->value.Connection->connector)
+    {
+    /* Do the first command asynchronously. */
+    case '&':
+      tc = command->value.Connection->first;
+      if (tc == 0)
+	return (EXECUTION_SUCCESS);
+
+      if (ignore_return)
+	tc->flags |= CMD_IGNORE_RETURN;
+      tc->flags |= CMD_AMPERSAND;
+
+      /* If this shell was compiled without job control support,
+	 if we are currently in a subshell via `( xxx )', or if job
+	 control is not active then the standard input for an
+	 asynchronous command is forced to /dev/null. */
+#if defined (JOB_CONTROL)
+      if ((subshell_environment || !job_control) && !stdin_redir)
+#else
+      if (!stdin_redir)
+#endif /* JOB_CONTROL */
+	tc->flags |= CMD_STDIN_REDIR;
+
+      exec_result = execute_command_internal (tc, 1, pipe_in, pipe_out, fds_to_close);
+      QUIT;
+
+      if (tc->flags & CMD_STDIN_REDIR)
+	tc->flags &= ~CMD_STDIN_REDIR;
+
+      second = command->value.Connection->second;
+      if (second)
+	{
+	  if (ignore_return)
+	    second->flags |= CMD_IGNORE_RETURN;
+
+	  exec_result = execute_command_internal (second, asynchronous, pipe_in, pipe_out, fds_to_close);
+	}
+
+      break;
+
+    /* Just call execute command on both sides. */
+    case ';':
+      if (ignore_return)
+	{
+	  if (command->value.Connection->first)
+	    command->value.Connection->first->flags |= CMD_IGNORE_RETURN;
+	  if (command->value.Connection->second)
+	    command->value.Connection->second->flags |= CMD_IGNORE_RETURN;
+	}
+      executing_list++;
+      QUIT;
+      execute_command (command->value.Connection->first);
+      QUIT;
+      exec_result = execute_command_internal (command->value.Connection->second,
+				      asynchronous, pipe_in, pipe_out,
+				      fds_to_close);
+      executing_list--;
+      break;
+
+    case '|':
+      was_error_trap = signal_is_trapped (ERROR_TRAP) && signal_is_ignored (ERROR_TRAP) == 0;
+      invert = (command->flags & CMD_INVERT_RETURN) != 0;
+      ignore_return = (command->flags & CMD_IGNORE_RETURN) != 0;
+
+      line_number_for_err_trap = line_number;	/* XXX - save value? */
+      exec_result = execute_pipeline (command, asynchronous, pipe_in, pipe_out, fds_to_close);
+
+      if (asynchronous)
+	{
+	  exec_result = EXECUTION_SUCCESS;
+	  invert = 0;
+	}
+
+      if (was_error_trap && ignore_return == 0 && invert == 0 && exec_result != EXECUTION_SUCCESS)
+	{
+	  last_command_exit_value = exec_result;
+	  save_line_number = line_number;
+	  line_number = line_number_for_err_trap;
+	  run_error_trap ();
+	  line_number = save_line_number;
+	}
+
+      if (ignore_return == 0 && invert == 0 && exit_immediately_on_error && exec_result != EXECUTION_SUCCESS)
+	{
+	  last_command_exit_value = exec_result;
+	  run_pending_traps ();
+	  jump_to_top_level (ERREXIT);
+	}
+
+      break;
+
+    case AND_AND:
+    case OR_OR:
+      if (asynchronous)
+	{
+	  /* If we have something like `a && b &' or `a || b &', run the
+	     && or || stuff in a subshell.  Force a subshell and just call
+	     execute_command_internal again.  Leave asynchronous on
+	     so that we get a report from the parent shell about the
+	     background job. */
+	  command->flags |= CMD_FORCE_SUBSHELL;
+	  exec_result = execute_command_internal (command, 1, pipe_in, pipe_out, fds_to_close);
+	  break;
+	}
+
+      /* Execute the first command.  If the result of that is successful
+	 and the connector is AND_AND, or the result is not successful
+	 and the connector is OR_OR, then execute the second command,
+	 otherwise return. */
+
+      executing_list++;
+      if (command->value.Connection->first)
+	command->value.Connection->first->flags |= CMD_IGNORE_RETURN;
+
+      exec_result = execute_command (command->value.Connection->first);
+      QUIT;
+      if (((command->value.Connection->connector == AND_AND) &&
+	   (exec_result == EXECUTION_SUCCESS)) ||
+	  ((command->value.Connection->connector == OR_OR) &&
+	   (exec_result != EXECUTION_SUCCESS)))
+	{
+	  second = command->value.Connection->second;
+	  if (ignore_return && second)
+	    second->flags |= CMD_IGNORE_RETURN;
+
+	  exec_result = execute_command (second);
+	}
+      executing_list--;
+      break;
+
+    default:
+      command_error ("execute_connection", CMDERR_BADCONN, command->value.Connection->connector, 0);
+      jump_to_top_level (DISCARD);
+      exec_result = EXECUTION_FAILURE;
+    }
+
+  return exec_result;
+}
+
+/* The test used to be only for interactive_shell, but we don't want to report
+   job status when the shell is not interactive or when job control isn't
+   enabled. */
+#define REAP() \
+  do \
+    { \
+      if (job_control == 0 || interactive_shell == 0) \
+	reap_dead_jobs (); \
+    } \
+  while (0)
 
 /* Execute a FOR command.  The syntax is: FOR word_desc IN word_list;
    DO command; DONE */
+static int
 execute_for_command (for_command)
      FOR_COM *for_command;
 {
-  /* I just noticed that the Bourne shell leaves word_desc bound to the
-     last name in word_list after the FOR statement is done.  This seems
-     wrong to me; I thought that the variable binding should be lexically
-     scoped, i.e., only would last the duration of the FOR command.  This
-     behaviour can be gotten by turning on the lexical_scoping switch. */
-
   register WORD_LIST *releaser, *list;
+  SHELL_VAR *v;
   char *identifier;
+  int retval, save_line_number;
+#if 0
   SHELL_VAR *old_value = (SHELL_VAR *)NULL; /* Remember the old value of x. */
-  int retval = EXECUTION_SUCCESS;
+#endif
 
+  save_line_number = line_number;
   if (check_identifier (for_command->name, 1) == 0)
-    return (EXECUTION_FAILURE);
+    {
+      if (posixly_correct && interactive_shell == 0)
+	{
+	  last_command_exit_value = EX_BADUSAGE;
+	  jump_to_top_level (ERREXIT);
+	}
+      return (EXECUTION_FAILURE);
+    }
 
   loop_level++;
   identifier = for_command->name->word;
 
-  list = releaser = expand_words (for_command->map_list);
+  line_number = for_command->line;	/* for expansion error messages */
+  list = releaser = expand_words_no_vars (for_command->map_list);
 
   begin_unwind_frame ("for");
   add_unwind_protect (dispose_words, releaser);
 
+#if 0
   if (lexical_scoping)
     {
       old_value = copy_variable (find_variable (identifier));
       if (old_value)
-   add_unwind_protect (dispose_variable, old_value);
+	add_unwind_protect (dispose_variable, old_value);
     }
+#endif
 
   if (for_command->flags & CMD_IGNORE_RETURN)
     for_command->action->flags |= CMD_IGNORE_RETURN;
 
-  while (list)
+  for (retval = EXECUTION_SUCCESS; list; list = list->next)
     {
       QUIT;
-      bind_variable (identifier, list->word->word);
-      execute_command (for_command->action);
-      retval = last_command_exit_value;
+
+      line_number = for_command->line;
+
+      /* Remember what this command looks like, for debugger. */
+      command_string_index = 0;
+      print_for_command_head (for_command);
+
+      if (echo_command_at_execute)
+	xtrace_print_for_command_head (for_command);
+
+      /* Save this command unless it's a trap command and we're not running
+	 a debug trap. */
+      if (signal_in_progress (DEBUG_TRAP) == 0 && running_trap == 0)
+	{
+	  FREE (the_printed_command_except_trap);
+	  the_printed_command_except_trap = savestring (the_printed_command);
+	}
+
+      retval = run_debug_trap ();
+#if defined (DEBUGGER)
+      /* In debugging mode, if the DEBUG trap returns a non-zero status, we
+	 skip the command. */
+      if (debugging_mode && retval != EXECUTION_SUCCESS)
+        continue;
+#endif
+
+      this_command_name = (char *)NULL;
+      /* XXX - special ksh93 for command index variable handling */
+      v = find_variable_last_nameref (identifier, 1);
+      if (v && nameref_p (v))
+	{
+	  if (valid_nameref_value (list->word->word, 1) == 0)
+	    {
+	      sh_invalidid (list->word->word);
+	      v = 0;
+	    }
+	  else
+	    v = bind_variable_value (v, list->word->word, 0);
+	}
+      else
+	v = bind_variable (identifier, list->word->word, 0);
+
+      if (v == 0 || readonly_p (v) || noassign_p (v))
+	{
+	  line_number = save_line_number;
+	  if (v && readonly_p (v) && interactive_shell == 0 && posixly_correct)
+	    {
+	      last_command_exit_value = EXECUTION_FAILURE;
+	      jump_to_top_level (FORCE_EOF);
+	    }
+	  else
+	    {
+	      dispose_words (releaser);
+	      discard_unwind_frame ("for");
+	      loop_level--;
+	      return (EXECUTION_FAILURE);
+	    }
+	}
+
+      if (ifsname (identifier))
+	setifs (v);
+
+      retval = execute_command (for_command->action);
       REAP ();
       QUIT;
 
       if (breaking)
-   {
-     breaking--;
-     break;
-   }
+	{
+	  breaking--;
+	  break;
+	}
 
       if (continuing)
-   {
-     continuing--;
-     if (continuing)
-       break;
-   }
-
-      list = list->next;
+	{
+	  continuing--;
+	  if (continuing)
+	    break;
+	}
     }
 
   loop_level--;
+  line_number = save_line_number;
 
+#if 0
   if (lexical_scoping)
     {
       if (!old_value)
-   makunbound (identifier, shell_variables);
+        unbind_variable (identifier);
       else
-   {
-     SHELL_VAR *new_value;
+	{
+	  SHELL_VAR *new_value;
 
-     new_value = bind_variable (identifier, value_cell(old_value));
-     new_value->attributes = old_value->attributes;
-     dispose_variable (old_value);
-   }
+	  new_value = bind_variable (identifier, value_cell(old_value), 0);
+	  new_value->attributes = old_value->attributes;
+	  dispose_variable (old_value);
+	}
     }
+#endif
 
   dispose_words (releaser);
   discard_unwind_frame ("for");
   return (retval);
 }
+
+#if defined (ARITH_FOR_COMMAND)
+/* Execute an arithmetic for command.  The syntax is
+
+	for (( init ; step ; test ))
+	do
+		body
+	done
+
+   The execution should be exactly equivalent to
+
+	eval \(\( init \)\)
+	while eval \(\( test \)\) ; do
+		body;
+		eval \(\( step \)\)
+	done
+*/
+static intmax_t
+eval_arith_for_expr (l, okp)
+     WORD_LIST *l;
+     int *okp;
+{
+  WORD_LIST *new;
+  intmax_t expresult;
+  int r;
+
+  new = expand_words_no_vars (l);
+  if (new)
+    {
+      if (echo_command_at_execute)
+	xtrace_print_arith_cmd (new);
+      this_command_name = "((";		/* )) for expression error messages */
+
+      command_string_index = 0;
+      print_arith_command (new);
+      if (signal_in_progress (DEBUG_TRAP) == 0)
+	{
+	  FREE (the_printed_command_except_trap);
+	  the_printed_command_except_trap = savestring (the_printed_command);
+	}
+
+      r = run_debug_trap ();
+      /* In debugging mode, if the DEBUG trap returns a non-zero status, we
+	 skip the command. */
+#if defined (DEBUGGER)
+      if (debugging_mode == 0 || r == EXECUTION_SUCCESS)
+	expresult = evalexp (new->word->word, okp);
+      else
+	{
+	  expresult = 0;
+	  if (okp)
+	    *okp = 1;
+	}
+#else
+      expresult = evalexp (new->word->word, okp);
+#endif
+      dispose_words (new);
+    }
+  else
+    {
+      expresult = 0;
+      if (okp)
+	*okp = 1;
+    }
+  return (expresult);
+}
+
+static int
+execute_arith_for_command (arith_for_command)
+     ARITH_FOR_COM *arith_for_command;
+{
+  intmax_t expresult;
+  int expok, body_status, arith_lineno, save_lineno;
+
+  body_status = EXECUTION_SUCCESS;
+  loop_level++;
+  save_lineno = line_number;
+
+  if (arith_for_command->flags & CMD_IGNORE_RETURN)
+    arith_for_command->action->flags |= CMD_IGNORE_RETURN;
+
+  this_command_name = "((";	/* )) for expression error messages */
+
+  /* save the starting line number of the command so we can reset
+     line_number before executing each expression -- for $LINENO
+     and the DEBUG trap. */
+  line_number = arith_lineno = arith_for_command->line;
+  if (variable_context && interactive_shell)
+    {
+      line_number -= function_line_number;
+      if (line_number < 0)
+	line_number = 0;
+    }
+
+  /* Evaluate the initialization expression. */
+  expresult = eval_arith_for_expr (arith_for_command->init, &expok);
+  if (expok == 0)
+    {
+      line_number = save_lineno;
+      return (EXECUTION_FAILURE);
+    }
+
+  while (1)
+    {
+      /* Evaluate the test expression. */
+      line_number = arith_lineno;
+      expresult = eval_arith_for_expr (arith_for_command->test, &expok);
+      line_number = save_lineno;
+
+      if (expok == 0)
+	{
+	  body_status = EXECUTION_FAILURE;
+	  break;
+	}
+      REAP ();
+      if (expresult == 0)
+	break;
+
+      /* Execute the body of the arithmetic for command. */
+      QUIT;
+      body_status = execute_command (arith_for_command->action);
+      QUIT;
+
+      /* Handle any `break' or `continue' commands executed by the body. */
+      if (breaking)
+	{
+	  breaking--;
+	  break;
+	}
+
+      if (continuing)
+	{
+	  continuing--;
+	  if (continuing)
+	    break;
+	}
+
+      /* Evaluate the step expression. */
+      line_number = arith_lineno;
+      expresult = eval_arith_for_expr (arith_for_command->step, &expok);
+      line_number = save_lineno;
+
+      if (expok == 0)
+	{
+	  body_status = EXECUTION_FAILURE;
+	  break;
+	}
+    }
+
+  loop_level--;
+  line_number = save_lineno;
+
+  return (body_status);
+}
+#endif
 
 #if defined (SELECT_COMMAND)
 static int LINES, COLS, tabsize;
@@ -1252,11 +3005,34 @@ static int LINES, COLS, tabsize;
 /* XXX - does not handle numbers > 1000000 at all. */
 #define NUMBER_LEN(s) \
 ((s < 10) ? 1 \
-     : ((s < 100) ? 2 \
-            : ((s < 1000) ? 3 \
-               : ((s < 10000) ? 4 \
-                   : ((s < 100000) ? 5 \
-                        : 6)))))
+	  : ((s < 100) ? 2 \
+		      : ((s < 1000) ? 3 \
+				   : ((s < 10000) ? 4 \
+						 : ((s < 100000) ? 5 \
+								: 6)))))
+
+static int
+displen (s)
+     const char *s;
+{
+#if defined (HANDLE_MULTIBYTE)
+  wchar_t *wcstr;
+  size_t slen;
+  int wclen;
+
+  wcstr = 0;
+  slen = mbstowcs (wcstr, s, 0);
+  if (slen == -1)
+    slen = 0;
+  wcstr = (wchar_t *)xmalloc (sizeof (wchar_t) * (slen + 1));
+  mbstowcs (wcstr, s, slen + 1);
+  wclen = wcswidth (wcstr, slen);
+  free (wcstr);
+  return (wclen < 0 ? STRLEN(s) : wclen);
+#else
+  return (STRLEN (s));
+#endif
+}
 
 static int
 print_index_and_element (len, ind, list)
@@ -1266,12 +3042,14 @@ print_index_and_element (len, ind, list)
   register WORD_LIST *l;
   register int i;
 
-  i = ind;
-  l = list;
-  while (l && --i)
-    l = l->next;
+  if (list == 0)
+    return (0);
+  for (i = ind, l = list; l && --i; l = l->next)
+    ;
+  if (l == 0)		/* don't think this can happen */
+    return (0);
   fprintf (stderr, "%*d%s%s", len, ind, RP_SPACE, l->word->word);
-  return (STRLEN (l->word->word));
+  return (displen (l->word->word));
 }
 
 static void
@@ -1281,15 +3059,15 @@ indent (from, to)
   while (from < to)
     {
       if ((to / tabsize) > (from / tabsize))
-   {
-     putc ('\t', stderr);
-     from += tabsize - from % tabsize;
-   }
+	{
+	  putc ('\t', stderr);
+	  from += tabsize - from % tabsize;
+	}
       else
-   {
-     putc (' ', stderr);
-     from++;
-   }
+	{
+	  putc (' ', stderr);
+	  from++;
+	}
     }
 }
 
@@ -1301,11 +3079,17 @@ print_select_list (list, list_len, max_elem_len, indices_len)
   int ind, row, elem_len, pos, cols, rows;
   int first_column_indices_len, other_indices_len;
 
-  cols = COLS / max_elem_len;
+  if (list == 0)
+    {
+      putc ('\n', stderr);
+      return;
+    }
+
+  cols = max_elem_len ? COLS / max_elem_len : 1;
   if (cols == 0)
     cols = 1;
-  rows = list_len / cols + (list_len % cols != 0);
-  cols = list_len / rows + (list_len % rows != 0);
+  rows = list_len ? list_len / cols + (list_len % cols != 0) : 1;
+  cols = list_len ? list_len / rows + (list_len % rows != 0) : 1;
 
   if (rows == 1)
     {
@@ -1321,16 +3105,16 @@ print_select_list (list, list_len, max_elem_len, indices_len)
       ind = row;
       pos = 0;
       while (1)
-   {
-     indices_len = (pos == 0) ? first_column_indices_len : other_indices_len;
-     elem_len = print_index_and_element (indices_len, ind + 1, list);
-     elem_len += indices_len + RP_SPACE_LEN;
-     ind += rows;
-     if (ind >= list_len)
-       break;
-     indent (pos + elem_len, pos + max_elem_len);
-     pos += max_elem_len;
-   }
+	{
+	  indices_len = (pos == 0) ? first_column_indices_len : other_indices_len;
+	  elem_len = print_index_and_element (indices_len, ind + 1, list);
+	  elem_len += indices_len + RP_SPACE_LEN;
+	  ind += rows;
+	  if (ind >= list_len)
+	    break;
+	  indent (pos + elem_len, pos + max_elem_len);
+	  pos += max_elem_len;
+	}
       putc ('\n', stderr);
     }
 }
@@ -1338,20 +3122,24 @@ print_select_list (list, list_len, max_elem_len, indices_len)
 /* Print the elements of LIST, one per line, preceded by an index from 1 to
    LIST_LEN.  Then display PROMPT and wait for the user to enter a number.
    If the number is between 1 and LIST_LEN, return that selection.  If EOF
-   is read, return a null string.  If a blank line is entered, the loop is
-   executed again. */
+   is read, return a null string.  If a blank line is entered, or an invalid
+   number is entered, the loop is executed again. */
 static char *
-select_query (list, list_len, prompt)
+select_query (list, list_len, prompt, print_menu)
      WORD_LIST *list;
      int list_len;
      char *prompt;
+     int print_menu;
 {
-  int max_elem_len, indices_len, len, reply;
+  int max_elem_len, indices_len, len;
+  intmax_t reply;
   WORD_LIST *l;
   char *repl_string, *t;
 
+#if 0
   t = get_string_value ("LINES");
   LINES = (t && *t) ? atoi (t) : 24;
+#endif
   t = get_string_value ("COLUMNS");
   COLS =  (t && *t) ? atoi (t) : 80;
 
@@ -1367,36 +3155,42 @@ select_query (list, list_len, prompt)
   max_elem_len = 0;
   for (l = list; l; l = l->next)
     {
-      len = STRLEN (l->word->word);
+      len = displen (l->word->word);
       if (len > max_elem_len)
-        max_elem_len = len;
+	max_elem_len = len;
     }
   indices_len = NUMBER_LEN (list_len);
   max_elem_len += indices_len + RP_SPACE_LEN + 2;
 
   while (1)
     {
-      print_select_list (list, list_len, max_elem_len, indices_len);
-      printf ("%s", prompt);
-      fflush (stdout);
+      if (print_menu)
+	print_select_list (list, list_len, max_elem_len, indices_len);
+      fprintf (stderr, "%s", prompt);
+      fflush (stderr);
       QUIT;
 
-      if (read_builtin ((WORD_LIST *)NULL) == EXECUTION_FAILURE)
-   {
-     putchar ('\n');
-     return ((char *)NULL);
-   }
+      if (read_builtin ((WORD_LIST *)NULL) != EXECUTION_SUCCESS)
+	{
+	  putchar ('\n');
+	  return ((char *)NULL);
+	}
       repl_string = get_string_value ("REPLY");
+      if (repl_string == 0)
+	return ((char *)NULL);
       if (*repl_string == 0)
-   continue;
-      reply = atoi (repl_string);
+	{
+	  print_menu = 1;
+	  continue;
+	}
+      if (legal_number (repl_string, &reply) == 0)
+	return "";
       if (reply < 1 || reply > list_len)
-   return "";
+	return "";
 
-      l = list;
-      while (l && --reply)
-        l = l->next;
-      return (l->word->word);
+      for (l = list; l && --reply; l = l->next)
+	;
+      return (l->word->word);		/* XXX - can't be null? */
     }
 }
 
@@ -1404,103 +3198,136 @@ select_query (list, list_len, prompt)
    SELECT word IN list DO command_list DONE
    Only `break' or `return' in command_list will terminate
    the command. */
+static int
 execute_select_command (select_command)
      SELECT_COM *select_command;
 {
   WORD_LIST *releaser, *list;
+  SHELL_VAR *v;
   char *identifier, *ps3_prompt, *selection;
-  int retval, list_len, return_val;
-#if 0
-  SHELL_VAR *old_value = (SHELL_VAR *)0;
-#endif
-
-
-  retval = EXECUTION_SUCCESS;
+  int retval, list_len, show_menu, save_line_number;
 
   if (check_identifier (select_command->name, 1) == 0)
     return (EXECUTION_FAILURE);
+
+  save_line_number = line_number;
+  line_number = select_command->line;
+
+  command_string_index = 0;
+  print_select_command_head (select_command);
+
+  if (echo_command_at_execute)
+    xtrace_print_select_command_head (select_command);
+
+#if 0
+  if (signal_in_progress (DEBUG_TRAP) == 0 && (this_command_name == 0 || (STREQ (this_command_name, "trap") == 0)))
+#else
+  if (signal_in_progress (DEBUG_TRAP) == 0 && running_trap == 0)
+#endif
+    {
+      FREE (the_printed_command_except_trap);
+      the_printed_command_except_trap = savestring (the_printed_command);
+    }
+
+  retval = run_debug_trap ();
+#if defined (DEBUGGER)
+  /* In debugging mode, if the DEBUG trap returns a non-zero status, we
+     skip the command. */
+  if (debugging_mode && retval != EXECUTION_SUCCESS)
+    return (EXECUTION_SUCCESS);
+#endif
 
   loop_level++;
   identifier = select_command->name->word;
 
   /* command and arithmetic substitution, parameter and variable expansion,
      word splitting, pathname expansion, and quote removal. */
-  list = releaser = expand_words (select_command->map_list);
+  list = releaser = expand_words_no_vars (select_command->map_list);
+  list_len = list_length (list);
+  if (list == 0 || list_len == 0)
+    {
+      if (list)
+	dispose_words (list);
+      line_number = save_line_number;
+      return (EXECUTION_SUCCESS);
+    }
 
   begin_unwind_frame ("select");
   add_unwind_protect (dispose_words, releaser);
 
-#if 0
-  if (lexical_scoping)
-    {
-      old_value = copy_variable (find_variable (identifier));
-      if (old_value)
-   add_unwind_protect (dispose_variable, old_value);
-    }
-#endif
-
   if (select_command->flags & CMD_IGNORE_RETURN)
     select_command->action->flags |= CMD_IGNORE_RETURN;
 
-  list_len = list_length (list);
-  ps3_prompt = get_string_value ("PS3");
-  if (!ps3_prompt)
-    ps3_prompt = "#? ";
-
-  unwind_protect_int (return_catch_flag);
-  unwind_protect_jmp_buf (return_catch);
-  return_catch_flag++;
+  retval = EXECUTION_SUCCESS;
+  show_menu = 1;
 
   while (1)
     {
+      line_number = select_command->line;
+      ps3_prompt = get_string_value ("PS3");
+      if (ps3_prompt == 0)
+	ps3_prompt = "#? ";
+
       QUIT;
-      selection = select_query (list, list_len, ps3_prompt);
+      selection = select_query (list, list_len, ps3_prompt, show_menu);
       QUIT;
       if (selection == 0)
-         break;
-      else
-         bind_variable (identifier, selection);
+	{
+	  /* select_query returns EXECUTION_FAILURE if the read builtin
+	     fails, so we want to return failure in this case. */
+	  retval = EXECUTION_FAILURE;
+	  break;
+	}
 
-      /* return_val = SETJMP(return_catch); */
-      SETJMP(return_val, return_catch);
+      v = bind_variable (identifier, selection, 0);
+      if (v == 0 || readonly_p (v) || noassign_p (v))
+	{
+	  if (v && readonly_p (v) && interactive_shell == 0 && posixly_correct)
+	    {
+	      last_command_exit_value = EXECUTION_FAILURE;
+	      jump_to_top_level (FORCE_EOF);
+	    }
+	  else
+	    {
+	      dispose_words (releaser);
+	      discard_unwind_frame ("select");
+	      loop_level--;
+	      line_number = save_line_number;
+	      return (EXECUTION_FAILURE);
+	    }
+	}
 
-      if (return_val)
-        {
-     retval = return_catch_value;
-     break;
-        }
-      else
-        retval = execute_command (select_command->action);
+      retval = execute_command (select_command->action);
 
       REAP ();
       QUIT;
 
       if (breaking)
-   {
-     breaking--;
-     break;
-   }
+	{
+	  breaking--;
+	  break;
+	}
+
+      if (continuing)
+	{
+	  continuing--;
+	  if (continuing)
+	    break;
+	}
+
+#if defined (KSH_COMPATIBLE_SELECT)
+      show_menu = 0;
+      selection = get_string_value ("REPLY");
+      if (selection && *selection == '\0')
+        show_menu = 1;
+#endif
     }
 
   loop_level--;
+  line_number = save_line_number;
 
-#if 0
-  if (lexical_scoping)
-    {
-      if (!old_value)
-   makunbound (identifier, shell_variables);
-      else
-   {
-     SHELL_VAR *new_value;
-
-     new_value = bind_variable (identifier, value_cell(old_value));
-     new_value->attributes = old_value->attributes;
-     dispose_variable (old_value);
-   }
-    }
-#endif
-
-  run_unwind_frame ("select");
+  dispose_words (releaser);
+  discard_unwind_frame ("select");
   return (retval);
 }
 #endif /* SELECT_COMMAND */
@@ -1509,88 +3336,104 @@ execute_select_command (select_command)
    The pattern_list is a linked list of pattern clauses; each clause contains
    some patterns to compare word_desc against, and an associated command to
    execute. */
+static int
 execute_case_command (case_command)
      CASE_COM *case_command;
 {
   register WORD_LIST *list;
-  WORD_LIST *wlist;
+  WORD_LIST *wlist, *es;
   PATTERN_LIST *clauses;
-  char *word;
-  int retval;
+  char *word, *pattern;
+  int retval, match, ignore_return, save_line_number;
 
-  /* Posix.2 specifies that the WORD is tilde expanded. */
-  if (member ('~', case_command->word->word))
+  save_line_number = line_number;
+  line_number = case_command->line;
+
+  command_string_index = 0;
+  print_case_command_head (case_command);
+
+  if (echo_command_at_execute)
+    xtrace_print_case_command_head (case_command);
+
+#if 0
+  if (signal_in_progress (DEBUG_TRAP) == 0 && (this_command_name == 0 || (STREQ (this_command_name, "trap") == 0)))
+#else
+  if (signal_in_progress (DEBUG_TRAP) == 0 && running_trap == 0)
+#endif
     {
-      word = tilde_expand (case_command->word->word);
-      free (case_command->word->word);
-      case_command->word->word = word;
+      FREE (the_printed_command_except_trap);
+      the_printed_command_except_trap = savestring (the_printed_command);
     }
 
-  wlist = expand_word_no_split (case_command->word, 0);
-  clauses = case_command->clauses;
-  word = (wlist) ? string_list (wlist) : savestring ("");
+  retval = run_debug_trap();
+#if defined (DEBUGGER)
+  /* In debugging mode, if the DEBUG trap returns a non-zero status, we
+     skip the command. */
+  if (debugging_mode && retval != EXECUTION_SUCCESS)
+    {
+      line_number = save_line_number;
+      return (EXECUTION_SUCCESS);
+    }
+#endif
+
+  wlist = expand_word_unsplit (case_command->word, 0);
+  word = wlist ? string_list (wlist) : savestring ("");
+  dispose_words (wlist);
+
   retval = EXECUTION_SUCCESS;
+  ignore_return = case_command->flags & CMD_IGNORE_RETURN;
 
   begin_unwind_frame ("case");
-  add_unwind_protect (dispose_words, wlist);
-  add_unwind_protect ((Function *)xfree, word);
+  add_unwind_protect (xfree, word);
 
-  while (clauses)
+#define EXIT_CASE()  goto exit_case_command
+
+  for (clauses = case_command->clauses; clauses; clauses = clauses->next)
     {
       QUIT;
-      list = clauses->patterns;
-      while (list)
-   {
-     char *pattern;
-     WORD_LIST *es;
-     int match;
+      for (list = clauses->patterns; list; list = list->next)
+	{
+	  es = expand_word_leave_quoted (list->word, 0);
 
-     /* Posix.2 specifies to tilde expand each member of the pattern
-        list. */
-     if (member ('~', list->word->word))
-       {
-         char *expansion = tilde_expand (list->word->word);
-         free (list->word->word);
-         list->word->word = expansion;
-       }
+	  if (es && es->word && es->word->word && *(es->word->word))
+	    pattern = quote_string_for_globbing (es->word->word, QGLOB_CVTNULL);
+	  else
+	    {
+	      pattern = (char *)xmalloc (1);
+	      pattern[0] = '\0';
+	    }
 
-     es = expand_word_leave_quoted (list->word, 0);
+	  /* Since the pattern does not undergo quote removal (as per
+	     Posix.2, section 3.9.4.3), the strmatch () call must be able
+	     to recognize backslashes as escape characters. */
+	  match = strmatch (pattern, word, FNMATCH_EXTFLAG|FNMATCH_IGNCASE) != FNM_NOMATCH;
+	  free (pattern);
 
-     if (es && es->word && es->word->word && *(es->word->word))
-       pattern = quote_string_for_globbing (es->word->word, 1);
-     else
-       pattern = savestring ("");
+	  dispose_words (es);
 
-     /* Since the pattern does not undergo quote removal (as per
-        Posix.2, section 3.9.4.3), the fnmatch () call must be able
-        to recognize backslashes as escape characters. */
-     match = (fnmatch (pattern, word, 0) != FNM_NOMATCH);
-     free (pattern);
+	  if (match)
+	    {
+	      do
+		{
+		  if (clauses->action && ignore_return)
+		    clauses->action->flags |= CMD_IGNORE_RETURN;
+		  retval = execute_command (clauses->action);
+		}
+	      while ((clauses->flags & CASEPAT_FALLTHROUGH) && (clauses = clauses->next));
+	      if (clauses == 0 || (clauses->flags & CASEPAT_TESTNEXT) == 0)
+		EXIT_CASE ();
+	      else
+		break;
+	    }
 
-     dispose_words (es);
-
-     if (match)
-       {
-         if (clauses->action &&
-        (case_command->flags & CMD_IGNORE_RETURN))
-      clauses->action->flags |= CMD_IGNORE_RETURN;
-         execute_command (clauses->action);
-         retval = last_command_exit_value;
-         goto exit_command;
-       }
-
-     list = list->next;
-     QUIT;
-   }
-
-      clauses = clauses->next;
+	  QUIT;
+	}
     }
 
- exit_command:
-  dispose_words (wlist);
+exit_case_command:
   free (word);
   discard_unwind_frame ("case");
-
+  line_number = save_line_number;
   return (retval);
 }
 
@@ -1600,6 +3443,7 @@ execute_case_command (case_command)
 /* The WHILE command.  Syntax: WHILE test DO action; DONE.
    Repeatedly execute action while executing test produces
    EXECUTION_SUCCESS. */
+static int
 execute_while_command (while_command)
      WHILE_COM *while_command;
 {
@@ -1607,6 +3451,7 @@ execute_while_command (while_command)
 }
 
 /* UNTIL is just like WHILE except that the test result is negated. */
+static int
 execute_until_command (while_command)
      WHILE_COM *while_command;
 {
@@ -1618,6 +3463,7 @@ execute_until_command (while_command)
    CMD_WHILE or CMD_UNTIL.  The return value for both commands should
    be EXECUTION_SUCCESS if no commands in the body are executed, and
    the status of the last command executed in the body otherwise. */
+static int
 execute_while_or_until (while_command, type)
      WHILE_COM *while_command;
      int type;
@@ -1633,33 +3479,48 @@ execute_while_or_until (while_command, type)
 
   while (1)
     {
-/*       fprintf(stderr, "execute_while_or_until: while_command->test\n"); fflush(stderr);
-       fprintf(stderr, "...%s\n", make_command_string(while_command->test));  fflush(stderr);
-*/
       return_value = execute_command (while_command->test);
       REAP ();
 
+      /* Need to handle `break' in the test when we would break out of the
+         loop.  The job control code will set `breaking' to loop_level
+         when a job in a loop is stopped with SIGTSTP.  If the stopped job
+         is in the loop test, `breaking' will not be reset unless we do
+         this, and the shell will cease to execute commands.  The same holds
+         true for `continue'. */
       if (type == CMD_WHILE && return_value != EXECUTION_SUCCESS)
-   break;
+	{
+	  if (breaking)
+	    breaking--;
+	  if (continuing)
+	    continuing--;
+	  break;
+	}
       if (type == CMD_UNTIL && return_value == EXECUTION_SUCCESS)
-   break;
+	{
+	  if (breaking)
+	    breaking--;
+	  if (continuing)
+	    continuing--;
+	  break;
+	}
 
       QUIT;
       body_status = execute_command (while_command->action);
       QUIT;
 
       if (breaking)
-   {
-     breaking--;
-     break;
-   }
+	{
+	  breaking--;
+	  break;
+	}
 
       if (continuing)
-   {
-     continuing--;
-     if (continuing)
-       break;
-   }
+	{
+	  continuing--;
+	  if (continuing)
+	    break;
+	}
     }
   loop_level--;
 
@@ -1669,19 +3530,23 @@ execute_while_or_until (while_command, type)
 /* IF test THEN command [ELSE command].
    IF also allows ELIF in the place of ELSE IF, but
    the parser makes *that* stupidity transparent. */
+static int
 execute_if_command (if_command)
      IF_COM *if_command;
 {
-  int return_value;
+  int return_value, save_line_number;
 
+  save_line_number = line_number;
   if_command->test->flags |= CMD_IGNORE_RETURN;
   return_value = execute_command (if_command->test);
+  line_number = save_line_number;
 
   if (return_value == EXECUTION_SUCCESS)
     {
       QUIT;
+
       if (if_command->true_case && (if_command->flags & CMD_IGNORE_RETURN))
-         if_command->true_case->flags |= CMD_IGNORE_RETURN;
+	if_command->true_case->flags |= CMD_IGNORE_RETURN;
 
       return (execute_command (if_command->true_case));
     }
@@ -1690,11 +3555,267 @@ execute_if_command (if_command)
       QUIT;
 
       if (if_command->false_case && (if_command->flags & CMD_IGNORE_RETURN))
-         if_command->false_case->flags |= CMD_IGNORE_RETURN;
+	if_command->false_case->flags |= CMD_IGNORE_RETURN;
 
       return (execute_command (if_command->false_case));
     }
 }
+
+#if defined (DPAREN_ARITHMETIC)
+static int
+execute_arith_command (arith_command)
+     ARITH_COM *arith_command;
+{
+  int expok, save_line_number, retval;
+  intmax_t expresult;
+  WORD_LIST *new;
+  char *exp;
+
+  expresult = 0;
+
+  save_line_number = line_number;
+  this_command_name = "((";	/* )) */
+  line_number = arith_command->line;
+  /* If we're in a function, update the line number information. */
+  if (variable_context && interactive_shell)
+    {
+      line_number -= function_line_number;
+      if (line_number < 0)
+	line_number = 0;
+    }      
+
+  command_string_index = 0;
+  print_arith_command (arith_command->exp);
+
+  if (signal_in_progress (DEBUG_TRAP) == 0)
+    {
+      FREE (the_printed_command_except_trap);
+      the_printed_command_except_trap = savestring (the_printed_command);
+    }
+
+  /* Run the debug trap before each arithmetic command, but do it after we
+     update the line number information and before we expand the various
+     words in the expression. */
+  retval = run_debug_trap ();
+#if defined (DEBUGGER)
+  /* In debugging mode, if the DEBUG trap returns a non-zero status, we
+     skip the command. */
+  if (debugging_mode && retval != EXECUTION_SUCCESS)
+    {
+      line_number = save_line_number;
+      return (EXECUTION_SUCCESS);
+    }
+#endif
+
+  new = expand_words_no_vars (arith_command->exp);
+
+  /* If we're tracing, make a new word list with `((' at the front and `))'
+     at the back and print it. */
+  if (echo_command_at_execute)
+    xtrace_print_arith_cmd (new);
+
+  if (new)
+    {
+      exp = new->next ? string_list (new) : new->word->word;
+      expresult = evalexp (exp, &expok);
+      line_number = save_line_number;
+      if (exp != new->word->word)
+	free (exp);
+      dispose_words (new);
+    }
+  else
+    {
+      expresult = 0;
+      expok = 1;
+    }
+
+  if (expok == 0)
+    return (EXECUTION_FAILURE);
+
+  return (expresult == 0 ? EXECUTION_FAILURE : EXECUTION_SUCCESS);
+}
+#endif /* DPAREN_ARITHMETIC */
+
+#if defined (COND_COMMAND)
+
+static char * const nullstr = "";
+
+/* XXX - can COND ever be NULL when this is called? */
+static int
+execute_cond_node (cond)
+     COND_COM *cond;
+{
+  int result, invert, patmatch, rmatch, mflags, ignore;
+  char *arg1, *arg2;
+#if 0
+  char *t1, *t2;
+#endif
+
+  invert = (cond->flags & CMD_INVERT_RETURN);
+  ignore = (cond->flags & CMD_IGNORE_RETURN);
+  if (ignore)
+    {
+      if (cond->left)
+	cond->left->flags |= CMD_IGNORE_RETURN;
+      if (cond->right)
+	cond->right->flags |= CMD_IGNORE_RETURN;
+    }
+      
+  if (cond->type == COND_EXPR)
+    result = execute_cond_node (cond->left);
+  else if (cond->type == COND_OR)
+    {
+      result = execute_cond_node (cond->left);
+      if (result != EXECUTION_SUCCESS)
+	result = execute_cond_node (cond->right);
+    }
+  else if (cond->type == COND_AND)
+    {
+      result = execute_cond_node (cond->left);
+      if (result == EXECUTION_SUCCESS)
+	result = execute_cond_node (cond->right);
+    }
+  else if (cond->type == COND_UNARY)
+    {
+      if (ignore)
+	comsub_ignore_return++;
+      arg1 = cond_expand_word (cond->left->op, 0);
+      if (ignore)
+	comsub_ignore_return--;
+      if (arg1 == 0)
+	arg1 = nullstr;
+      if (echo_command_at_execute)
+	xtrace_print_cond_term (cond->type, invert, cond->op, arg1, (char *)NULL);
+      result = unary_test (cond->op->word, arg1) ? EXECUTION_SUCCESS : EXECUTION_FAILURE;
+      if (arg1 != nullstr)
+	free (arg1);
+    }
+  else if (cond->type == COND_BINARY)
+    {
+      rmatch = 0;
+      patmatch = (((cond->op->word[1] == '=') && (cond->op->word[2] == '\0') &&
+		   (cond->op->word[0] == '!' || cond->op->word[0] == '=')) ||
+		  (cond->op->word[0] == '=' && cond->op->word[1] == '\0'));
+#if defined (COND_REGEXP)
+      rmatch = (cond->op->word[0] == '=' && cond->op->word[1] == '~' &&
+		cond->op->word[2] == '\0');
+#endif
+
+      if (ignore)
+	comsub_ignore_return++;
+      arg1 = cond_expand_word (cond->left->op, 0);
+      if (ignore)
+	comsub_ignore_return--;
+      if (arg1 == 0)
+	arg1 = nullstr;
+      if (ignore)
+	comsub_ignore_return++;
+      arg2 = cond_expand_word (cond->right->op,
+			       (rmatch && shell_compatibility_level > 31) ? 2 : (patmatch ? 1 : 0));
+      if (ignore)
+	comsub_ignore_return--;
+      if (arg2 == 0)
+	arg2 = nullstr;
+
+      if (echo_command_at_execute)
+	xtrace_print_cond_term (cond->type, invert, cond->op, arg1, arg2);
+
+#if defined (COND_REGEXP)
+      if (rmatch)
+	{
+	  mflags = SHMAT_PWARN;
+#if defined (ARRAY_VARS)
+	  mflags |= SHMAT_SUBEXP;
+#endif
+
+#if 0
+	  t1 = strescape(arg1);
+	  t2 = strescape(arg2);
+	  itrace("execute_cond_node: sh_regmatch on `%s' and `%s'", t1, t2);
+	  free(t1);
+	  free(t2);
+#endif
+
+	  result = sh_regmatch (arg1, arg2, mflags);
+	}
+      else
+#endif /* COND_REGEXP */
+	{
+	  int oe;
+	  oe = extended_glob;
+	  extended_glob = 1;
+	  result = binary_test (cond->op->word, arg1, arg2, TEST_PATMATCH|TEST_ARITHEXP|TEST_LOCALE)
+				  ? EXECUTION_SUCCESS
+				  : EXECUTION_FAILURE;
+	  extended_glob = oe;
+	}
+      if (arg1 != nullstr)
+	free (arg1);
+      if (arg2 != nullstr)
+	free (arg2);
+    }
+  else
+    {
+      command_error ("execute_cond_node", CMDERR_BADTYPE, cond->type, 0);
+      jump_to_top_level (DISCARD);
+      result = EXECUTION_FAILURE;
+    }
+
+  if (invert)
+    result = (result == EXECUTION_SUCCESS) ? EXECUTION_FAILURE : EXECUTION_SUCCESS;
+
+  return result;
+}
+
+static int
+execute_cond_command (cond_command)
+     COND_COM *cond_command;
+{
+  int retval, save_line_number;
+
+  retval = EXECUTION_SUCCESS;
+  save_line_number = line_number;
+
+  this_command_name = "[[";
+  line_number = cond_command->line;
+  /* If we're in a function, update the line number information. */
+  if (variable_context && interactive_shell)
+    {
+      line_number -= function_line_number;
+      if (line_number < 0)
+	line_number = 0;
+    }
+  command_string_index = 0;
+  print_cond_command (cond_command);
+
+  if (signal_in_progress (DEBUG_TRAP) == 0)
+    {
+      FREE (the_printed_command_except_trap);
+      the_printed_command_except_trap = savestring (the_printed_command);
+    }
+
+  /* Run the debug trap before each conditional command, but do it after we
+     update the line number information. */
+  retval = run_debug_trap ();
+#if defined (DEBUGGER)
+  /* In debugging mode, if the DEBUG trap returns a non-zero status, we
+     skip the command. */
+  if (debugging_mode && retval != EXECUTION_SUCCESS)
+    {
+      line_number = save_line_number;
+      return (EXECUTION_SUCCESS);
+    }
+#endif
+
+#if 0
+  debug_print_cond_command (cond_command);
+#endif
+
+  last_command_exit_value = retval = execute_cond_node (cond_command);
+  line_number = save_line_number;
+  return (retval);
+}
+#endif /* COND_COMMAND */
 
 static void
 bind_lastarg (arg)
@@ -1702,581 +3823,1034 @@ bind_lastarg (arg)
 {
   SHELL_VAR *var;
 
-  if (!arg)
+  if (arg == 0)
     arg = "";
-  var = bind_variable ("_", arg);
-  var->attributes &= ~att_exported;
+  var = bind_variable ("_", arg, 0);
+  if (var)
+    VUNSETATTR (var, att_exported);
+}
+
+/* Execute a null command.  Fork a subshell if the command uses pipes or is
+   to be run asynchronously.  This handles all the side effects that are
+   supposed to take place. */
+static int
+execute_null_command (redirects, pipe_in, pipe_out, async)
+     REDIRECT *redirects;
+     int pipe_in, pipe_out, async;
+{
+  int r;
+  int forcefork;
+  REDIRECT *rd;
+
+  for (forcefork = 0, rd = redirects; rd; rd = rd->next)
+    forcefork += rd->rflags & REDIR_VARASSIGN;
+
+  if (forcefork || pipe_in != NO_PIPE || pipe_out != NO_PIPE || async)
+    {
+      /* We have a null command, but we really want a subshell to take
+	 care of it.  Just fork, do piping and redirections, and exit. */
+      if (make_child ((char *)NULL, async) == 0)
+	{
+	  /* Cancel traps, in trap.c. */
+	  restore_original_signals ();		/* XXX */
+
+	  do_piping (pipe_in, pipe_out);
+
+#if defined (COPROCESS_SUPPORT)
+	  coproc_closeall ();
+#endif
+
+	  subshell_environment = 0;
+	  if (async)
+	    subshell_environment |= SUBSHELL_ASYNC;
+	  if (pipe_in != NO_PIPE || pipe_out != NO_PIPE)
+	    subshell_environment |= SUBSHELL_PIPE;
+
+	  if (do_redirections (redirects, RX_ACTIVE) == 0)
+	    exit (EXECUTION_SUCCESS);
+	  else
+	    exit (EXECUTION_FAILURE);
+	}
+      else
+	{
+	  close_pipes (pipe_in, pipe_out);
+#if defined (PROCESS_SUBSTITUTION) && defined (HAVE_DEV_FD)
+	  if (pipe_out == NO_PIPE)
+	    unlink_fifo_list ();
+#endif
+	  return (EXECUTION_SUCCESS);
+	}
+    }
+  else
+    {
+      /* Even if there aren't any command names, pretend to do the
+	 redirections that are specified.  The user expects the side
+	 effects to take place.  If the redirections fail, then return
+	 failure.  Otherwise, if a command substitution took place while
+	 expanding the command or a redirection, return the value of that
+	 substitution.  Otherwise, return EXECUTION_SUCCESS. */
+
+      r = do_redirections (redirects, RX_ACTIVE|RX_UNDOABLE);
+      cleanup_redirects (redirection_undo_list);
+      redirection_undo_list = (REDIRECT *)NULL;
+
+      if (r != 0)
+	return (EXECUTION_FAILURE);
+      else if (last_command_subst_pid != NO_PID)
+	return (last_command_exit_value);
+      else
+	return (EXECUTION_SUCCESS);
+    }
+}
+
+/* This is a hack to suppress word splitting for assignment statements
+   given as arguments to builtins with the ASSIGNMENT_BUILTIN flag set. */
+static void
+fix_assignment_words (words)
+     WORD_LIST *words;
+{
+  WORD_LIST *w, *wcmd;
+  struct builtin *b;
+  int assoc, global, array, integer;
+
+  if (words == 0)
+    return;
+
+  b = 0;
+  assoc = global = array = integer = 0;
+
+  /* Skip over assignment statements preceding a command name */
+  wcmd = words;
+  for (wcmd = words; wcmd; wcmd = wcmd->next)
+    if ((wcmd->word->flags & W_ASSIGNMENT) == 0)
+      break;
+  /* Posix (post-2008) says that `command' doesn't change whether
+     or not the builtin it shadows is a `declaration command', even
+     though it removes other special builtin properties.  In Posix
+     mode, we skip over one or more instances of `command' and
+     deal with the next word as the assignment builtin. */
+  while (posixly_correct && wcmd && wcmd->word && wcmd->word->word && STREQ (wcmd->word->word, "command"))
+    wcmd = wcmd->next;
+
+  for (w = wcmd; w; w = w->next)
+    if (w->word->flags & W_ASSIGNMENT)
+      {
+      	/* Lazy builtin lookup, only do it if we find an assignment */
+	if (b == 0)
+	  {
+	    b = builtin_address_internal (wcmd->word->word, 0);
+	    if (b == 0 || (b->flags & ASSIGNMENT_BUILTIN) == 0)
+	      return;
+	    else if (b && (b->flags & ASSIGNMENT_BUILTIN))
+	      wcmd->word->flags |= W_ASSNBLTIN;
+	  }
+	w->word->flags |= (W_NOSPLIT|W_NOGLOB|W_TILDEEXP|W_ASSIGNARG);
+#if defined (ARRAY_VARS)
+	if (assoc)
+	  w->word->flags |= W_ASSIGNASSOC;
+	if (array)
+	  w->word->flags |= W_ASSIGNARRAY;
+#endif
+	if (global)
+	  w->word->flags |= W_ASSNGLOBAL;
+
+	/* If we have an assignment builtin that does not create local variables,
+	   make sure we create global variables even if we internally call
+	   `declare' */
+	if (b && ((b->flags & (ASSIGNMENT_BUILTIN|LOCALVAR_BUILTIN)) == ASSIGNMENT_BUILTIN))
+	  w->word->flags |= W_ASSNGLOBAL;
+      }
+#if defined (ARRAY_VARS)
+    /* Note that we saw an associative array option to a builtin that takes
+       assignment statements.  This is a bit of a kludge. */
+    else if (w->word->word[0] == '-' && (strpbrk (w->word->word+1, "Aag") != 0))
+#else
+    else if (w->word->word[0] == '-' && strchr (w->word->word+1, 'g'))
+#endif
+      {
+	if (b == 0)
+	  {
+	    b = builtin_address_internal (wcmd->word->word, 0);
+	    if (b == 0 || (b->flags & ASSIGNMENT_BUILTIN) == 0)
+	      return;
+	    else if (b && (b->flags & ASSIGNMENT_BUILTIN))
+	      wcmd->word->flags |= W_ASSNBLTIN;
+	  }
+	if ((wcmd->word->flags & W_ASSNBLTIN) && strchr (w->word->word+1, 'A'))
+	  assoc = 1;
+	else if ((wcmd->word->flags & W_ASSNBLTIN) && strchr (w->word->word+1, 'a'))
+	  array = 1;
+	if ((wcmd->word->flags & W_ASSNBLTIN) && strchr (w->word->word+1, 'g'))
+	  global = 1;
+      }
+}
+
+/* Return 1 if the file found by searching $PATH for PATHNAME, defaulting
+   to PATHNAME, is a directory.  Used by the autocd code below. */
+static int
+is_dirname (pathname)
+     char *pathname;
+{
+  char *temp;
+  int ret;
+
+  temp = search_for_command (pathname, 0);
+  ret = temp ? file_isdir (temp) : file_isdir (pathname);
+  free (temp);
+  return ret;
 }
 
 /* The meaty part of all the executions.  We have to start hacking the
    real execution of commands here.  Fork a process, set things up,
    execute the command. */
-execute_simple_command_from_thread (simple_command, pipe_in, pipe_out, async, fds_to_close, from_thread)
-   SIMPLE_COM *simple_command;
-   int pipe_in, pipe_out, async;
-   struct fd_bitmap *fds_to_close;
-   int from_thread;
-{
-   WORD_LIST *words, *lastword;
-   char *command_line, *lastarg;
-   int first_word_quoted, result;
-   pid_t old_last_command_subst_pid;
-
-   result = EXECUTION_SUCCESS;
-
-   /* fprintf(stderr, "Execute simple command %d\n", __LINE__); */
-   /* If we're in a function, update the pseudo-line-number information. */
-   if (variable_context)
-      line_number = simple_command->line - function_line_number;
-
-   /* Remember what this command line looks like at invocation. */
-   command_string_index = 0;
-   print_simple_command (simple_command);
-   command_line = (char *)alloca (1 + strlen (the_printed_command));
-   strcpy (command_line, the_printed_command);
-
-   /*fprintf(stderr, "Execute simple command %s -- %d\n", command_line, __LINE__);*/
-   first_word_quoted =
-      simple_command->words ? simple_command->words->word->quoted : 0;
-
-   old_last_command_subst_pid = last_command_subst_pid;
-
-   /* If we are re-running this as the result of executing the `command'
-      builtin, do not expand the command words a second time. */
-   if ((simple_command->flags & CMD_INHIBIT_EXPANSION) == 0)
-   {
-#ifdef __NT_VC__
-      nt_set_current_fds(fds_to_close);
-#else
-      current_fds_to_close = fds_to_close;
-#endif
-      words = expand_words (simple_command->words);
-#ifdef __NT_VC__
-      nt_clean_current_fds();
-#else
-      current_fds_to_close = (struct fd_bitmap *)NULL;
-#endif
-   }
-   else
-      words = copy_word_list (simple_command->words);
-
-   lastarg = (char *)NULL;
-
-   /* It is possible for WORDS not to have anything left in it.
-      Perhaps all the words consisted of `$foo', and there was
-      no variable `$foo'. */
-   if (words)
-   {
-      Function *builtin;
-      SHELL_VAR *func;
-
-      begin_unwind_frame ("simple-command");
-
-      if (echo_command_at_execute)
-      {
-         char *line = string_list (words);
-
-         if (line && *line)
-            fprintf (stderr, "%s%s\n", indirection_level_string (), line);
-
-         FREE (line);
-      }
-
-/*  fprintf(stderr, "Execute simple command %s -- %d\n", command_line, __LINE__);*/
-
-      if (simple_command->flags & CMD_NO_FUNCTIONS)
-         func = (SHELL_VAR *)NULL;
-      else
-         func = find_function (words->word->word);
-
-      add_unwind_protect (dispose_words, words);
-
-      QUIT;
-
-      /* Bind the last word in this command to "$_" after execution. */
-      for (lastword = words; lastword->next; lastword = lastword->next);
-      lastarg = lastword->word->word;
-
-#if defined (JOB_CONTROL)
-      /* Is this command a job control related thing? */
-      if (words->word->word[0] == '%')
-      {
-         int result;
-
-         if (async)
-            this_command_name = "bg";
-         else
-            this_command_name = "fg";
-
-         last_shell_builtin = this_shell_builtin;
-         this_shell_builtin = builtin_address (this_command_name);
-         result = (*this_shell_builtin) (words);
-         goto return_result;
-      }
-
-      /* One other possiblilty.  The user may want to resume an existing job.
-         If they do, find out whether this word is a candidate for a running
-         job. */
-      {
-         char *auto_resume_value = get_string_value ("auto_resume");
-
-         if (auto_resume_value &&
-             !first_word_quoted &&
-             !words->next &&
-             words->word->word[0] &&
-             !simple_command->redirects &&
-             pipe_in == NO_PIPE &&
-             pipe_out == NO_PIPE &&
-             !async)
-         {
-            char *word = words->word->word;
-            register int i;
-            int wl, cl, exact, substring, match, started_status;
-            register PROCESS *p;
-
-            exact = STREQ (auto_resume_value, "exact");
-            substring = STREQ (auto_resume_value, "substring");
-            wl = strlen (word);
-            for (i = job_slots - 1; i > -1; i--)
-            {
-               if (!jobs[i] || (JOBSTATE (i) != JSTOPPED))
-                  continue;
-
-               p = jobs[i]->pipe;
-               do
-               {
-                  if (exact)
-                  {
-                     cl = strlen (p->command);
-                     match = STREQN (p->command, word, cl);
-                  }
-                  else if (substring)
-                     match = strindex (p->command, word) != (char *)0;
-                  else
-                     match = STREQN (p->command, word, wl);
-
-                  if (match == 0)
-                  {
-                     p = p->next;
-                     continue;
-                  }
-
-                  run_unwind_frame ("simple-command");
-                  last_shell_builtin = this_shell_builtin;
-                  this_shell_builtin = builtin_address ("fg");
-
-                  started_status = start_job (i, 1);
-
-                  if (started_status < 0)
-                     return (EXECUTION_FAILURE);
-                  else
-                     return (started_status);
-               }
-               while (p != jobs[i]->pipe);
-            }
-         }
-      }
-#endif /* JOB_CONTROL */
-
-      /*fprintf(stderr, "Execute simple command %s -- %d\n", command_line, __LINE__);*/
-      /* Remember the name of this command globally. */
-      this_command_name = words->word->word;
-
-      QUIT;
-
-      /* This command could be a shell builtin or a user-defined function.
-         If so, and we have pipes, then fork a subshell in here.  Else, just
-         do the command. */
-
-      /*fprintf(stderr, "Execute simple command %s -- %d\n", command_line, __LINE__);*/
-
-
-      if (func)
-         builtin = (Function *)NULL;
-      else
-         builtin = find_shell_builtin (this_command_name);
-
-      /* fprintf(stderr, "Execute simple command %s, builtin: %x -- %d\n", command_line, builtin, __LINE__); */
-      last_shell_builtin = this_shell_builtin;
-      this_shell_builtin = builtin;
-
-      if (builtin || func)
-      {
-/*  fprintf(stderr, "Execute simple command %s -- %d\n", command_line, __LINE__); */
-         if ((pipe_in != NO_PIPE) || (pipe_out != NO_PIPE) || async)
-         {
-#ifdef __NT_VC__
-            /*fprintf(stderr, "Execute simple command %s -- %d\n", command_line, __LINE__);*/
-            nt_execute_builtin_command(words,simple_command->redirects,
-                                       this_command_name, pipe_in, pipe_out,async, fds_to_close,
-                                       simple_command->flags,shell_name,builtin,func);
-#else
-            if (make_child (savestring (command_line), async) == 0)
-            { /* in child */
-               /* Cancel traps, in trap.c. */
-               restore_original_signals ();
-
-               if (async)
-                  setup_async_signals ();
-
-               execute_subshell_builtin_or_function
-                  (words, simple_command->redirects, builtin, func,
-                   pipe_in, pipe_out, async, fds_to_close,
-                   simple_command->flags);
-            }
-            else /* in parent */
-#endif /* ifdef __NT_VC__ else */
-            {
-               close_pipes (pipe_in, pipe_out);
-#if defined (PROCESS_SUBSTITUTION) && defined (HAVE_DEV_FD)
-               unlink_fifo_list ();
-#endif
-               goto return_result;
-            }
-         }
-         else
-         {
-            if ((0 != from_thread) && (NULL == builtin))
-            {
-               /* Handle function calls in backquotes which
-                * must be processed in a own sub-shell.
-                * Because there is no fork() in Windows, we simply write
-                * all variables, all function definitions and
-                * the function call to a temporary file and
-                * call the shell binary with the temporary
-                * file as parameter.
-                *
-                * So the function runs in a own process and cannot affect the
-                * parent's variables (as it would when running as a thread)
-                */
-
-               char * temp_name = NULL; /* name of temporary file */
-               const char * temp_dir = getenv("TEMP");
-               char acFullPrefix[256] = "";
-               char *pcCommandLine = malloc(1024);
-               int iCommandLineLen = 1024;
-               const char *pcShellName = nt_get_shell_binary();
-               WORD_LIST *wlist = NULL;
-               WORD_LIST *warg = NULL;
-
-
-               sprintf(acFullPrefix, "%d.%d.%s", nt_get_process_id(), nt_get_thread_id(), "inc.sh");
-
-               nt_enter_critsec(__FILE__, __LINE__);
-               if (temp_dir) temp_name = tempnam((char*) temp_dir, acFullPrefix);
-               if (!temp_name) temp_name = tmpnam(NULL);
-
-               {
-                  FILE *fp = fopen(temp_name, "w");
-                  fclose(fp);
-               }
-               nt_leave_critsec(__FILE__, __LINE__);
-
-               nt_export_functions(temp_name, words->word->word);
-
-               sprintf(pcCommandLine, "%s \"%s\"", pcShellName, temp_name);
-
-               wlist = make_word_list (make_word (pcShellName), wlist);
-               wlist = make_word_list (make_word (temp_name), wlist);
-
-               for (warg = words->next; NULL != warg ; warg = warg->next)
-               {
-                  int iCommandLineLenNew = iCommandLineLen;
-
-                  /* printf("CommandLineLen = %d/%d, CommandLine: '%s'\n", iCommandLineLen, iCommandLineLenNew, pcCommandLine); fflush(stdout); */
-                  /* printf("lencmd: %d, lenarg: %d\n", strlen(pcCommandLine), strlen(warg->word->word)); fflush(stdout); */
-
-                  while (iCommandLineLenNew <= (strlen(pcCommandLine) + strlen(warg->word->word) + 5))
-                  {
-                     iCommandLineLenNew += 1024;
-                  }
-
-                  /* printf("CommandLineLen = %d/%d, CommandLine: '%s'\n", iCommandLineLen, iCommandLineLenNew, pcCommandLine); fflush(stdout); */
-                  if (iCommandLineLenNew > iCommandLineLen)
-                  {
-                     pcCommandLine = realloc(pcCommandLine, iCommandLineLenNew);
-                     iCommandLineLen = iCommandLineLenNew;
-                  }
-
-                  strcat(pcCommandLine, " \"");
-                  strcat(pcCommandLine, warg->word->word);
-                  strcat(pcCommandLine, "\"");
-
-                  wlist = make_word_list (make_word (warg->word->word), wlist);
-               }
-
-
-               wlist = REVERSE_LIST (wlist, WORD_LIST *);
-
-               /* printf("Executing: '%s'\n", pcCommandLine); fflush(stdout); */
-               result = execute_disk_command (wlist,
-                                              simple_command->redirects,
-                                              pcCommandLine,
-                                              pipe_in,
-                                              pipe_out,
-                                              async,
-                                              fds_to_close,
-                                              (simple_command->flags & CMD_NO_FORK));
-
-               fflush(stderr);
-               fflush(stdout);
-
-               dispose_word(wlist); wlist = NULL;
-               nt_delete_file(temp_name);
-               free(pcCommandLine); pcCommandLine = NULL;
-               goto return_result;
-            }
-            else
-            {
-               result = execute_builtin_or_function
-                  (words, builtin, func, simple_command->redirects, fds_to_close,
-                   simple_command->flags);
-            }
-
-            goto return_result;
-         }
-      }
-
-      result = execute_disk_command (words, simple_command->redirects, command_line,
-                                     pipe_in, pipe_out, async, fds_to_close,
-                                     (simple_command->flags & CMD_NO_FORK));
-
-      goto return_result;
-   }
-   else if (pipe_in != NO_PIPE || pipe_out != NO_PIPE || async)
-   {
-      /* We have a null command, but we really want a subshell to take
-         care of it.  Just fork, do piping and redirections, and exit. */
-      if (make_child (savestring (""), async) == 0)
-      {
-         /* Cancel traps, in trap.c. */
-         restore_original_signals ();
-
-         do_piping (pipe_in, pipe_out);
-
-         subshell_environment = 1;
-
-         if (do_redirections (simple_command->redirects, 1, 0, 0) == 0)
-         {
-#ifndef  __NT_VC__
-            exit (EXECUTION_SUCCESS);
-#else
-            return(EXECUTION_SUCCESS);
-#endif
-         }
-         else
-         {
-#ifndef  __NT_VC__
-            exit (EXECUTION_FAILURE);
-#else
-            return(EXECUTION_FAILURE);
-#endif
-         }
-      }
-      else
-      {
-         close_pipes (pipe_in, pipe_out);
-#if defined (PROCESS_SUBSTITUTION) && defined (HAVE_DEV_FD)
-         unlink_fifo_list ();
-#endif
-         result = EXECUTION_SUCCESS;
-         goto return_result;
-      }
-   }
-   else
-   {
-      /* Even if there aren't any command names, pretend to do the
-         redirections that are specified.  The user expects the side
-         effects to take place.  If the redirections fail, then return
-         failure.  Otherwise, if a command substitution took place while
-         expanding the command or a redirection, return the value of that
-         substitution.  Otherwise, return EXECUTION_SUCCESS. */
-
-      if (do_redirections (simple_command->redirects, 0, 0, 0) != 0)
-         result = EXECUTION_FAILURE;
-      else if (old_last_command_subst_pid != last_command_subst_pid)
-         result = last_command_exit_value;
-      else
-         result = EXECUTION_SUCCESS;
-      }
-
-   /*fprintf(stderr, "Execute simple command %s -- %d\n", command_line, __LINE__);*/
-  return_result:
-   bind_lastarg (lastarg);
-   /* The unwind-protect frame is set up only if WORDS is not empty. */
-   if (words)
-      run_unwind_frame ("simple-command");
-   return (result);
-}
-
+static int
 execute_simple_command (simple_command, pipe_in, pipe_out, async, fds_to_close)
      SIMPLE_COM *simple_command;
      int pipe_in, pipe_out, async;
      struct fd_bitmap *fds_to_close;
 {
-   return(execute_simple_command_from_thread(simple_command, pipe_in, pipe_out, async, fds_to_close, 0));
+  WORD_LIST *words, *lastword;
+  char *command_line, *lastarg, *temp;
+  int first_word_quoted, result, builtin_is_special, already_forked, dofork;
+  pid_t old_last_async_pid;
+  sh_builtin_func_t *builtin;
+  SHELL_VAR *func;
+  volatile int old_builtin, old_command_builtin;
+
+  result = EXECUTION_SUCCESS;
+  special_builtin_failed = builtin_is_special = 0;
+  command_line = (char *)0;
+
+  QUIT;
+
+  /* If we're in a function, update the line number information. */
+  if (variable_context && interactive_shell && sourcelevel == 0)
+    {
+      line_number -= function_line_number;
+      if (line_number < 0)
+	line_number = 0;
+    }
+
+  /* Remember what this command line looks like at invocation. */
+  command_string_index = 0;
+  print_simple_command (simple_command);
+
+#if 0
+  if (signal_in_progress (DEBUG_TRAP) == 0 && (this_command_name == 0 || (STREQ (this_command_name, "trap") == 0)))
+#else
+  if (signal_in_progress (DEBUG_TRAP) == 0 && running_trap == 0)
+#endif
+    {
+      FREE (the_printed_command_except_trap);
+      the_printed_command_except_trap = the_printed_command ? savestring (the_printed_command) : (char *)0;
+    }
+
+  /* Run the debug trap before each simple command, but do it after we
+     update the line number information. */
+  result = run_debug_trap ();
+#if defined (DEBUGGER)
+  /* In debugging mode, if the DEBUG trap returns a non-zero status, we
+     skip the command. */
+  if (debugging_mode && result != EXECUTION_SUCCESS)
+    return (EXECUTION_SUCCESS);
+#endif
+
+  first_word_quoted =
+    simple_command->words ? (simple_command->words->word->flags & W_QUOTED) : 0;
+
+  last_command_subst_pid = NO_PID;
+  old_last_async_pid = last_asynchronous_pid;
+
+  already_forked = dofork = 0;
+
+  /* If we're in a pipeline or run in the background, set DOFORK so we
+     make the child early, before word expansion.  This keeps assignment
+     statements from affecting the parent shell's environment when they
+     should not. */
+  dofork = pipe_in != NO_PIPE || pipe_out != NO_PIPE || async;
+
+  /* Something like `%2 &' should restart job 2 in the background, not cause
+     the shell to fork here. */
+  if (dofork && pipe_in == NO_PIPE && pipe_out == NO_PIPE &&
+	simple_command->words && simple_command->words->word &&
+	simple_command->words->word->word &&
+	(simple_command->words->word->word[0] == '%'))
+    dofork = 0;
+
+  if (dofork)
+    {
+      /* Do this now, because execute_disk_command will do it anyway in the
+	 vast majority of cases. */
+      maybe_make_export_env ();
+
+      /* Don't let a DEBUG trap overwrite the command string to be saved with
+	 the process/job associated with this child. */
+      if (make_child (savestring (the_printed_command_except_trap), async) == 0)
+	{
+	  already_forked = 1;
+	  simple_command->flags |= CMD_NO_FORK;
+
+	  subshell_environment = SUBSHELL_FORK;		/* XXX */
+	  if (pipe_in != NO_PIPE || pipe_out != NO_PIPE)
+	    subshell_environment |= SUBSHELL_PIPE;
+	  if (async)
+	    subshell_environment |= SUBSHELL_ASYNC;
+
+	  /* We need to do this before piping to handle some really
+	     pathological cases where one of the pipe file descriptors
+	     is < 2. */
+	  if (fds_to_close)
+	    close_fd_bitmap (fds_to_close);
+
+	  /* If we fork because of an input pipe, note input pipe for later to
+	     inhibit async commands from redirecting stdin from /dev/null */
+	  stdin_redir |= pipe_in != NO_PIPE;
+
+	  do_piping (pipe_in, pipe_out);
+	  pipe_in = pipe_out = NO_PIPE;
+#if defined (COPROCESS_SUPPORT)
+	  coproc_closeall ();
+#endif
+
+	  last_asynchronous_pid = old_last_async_pid;
+
+	  CHECK_SIGTERM;
+
+	  if (async)
+	    subshell_level++;		/* not for pipes yet */
+	}
+      else
+	{
+	  /* Don't let simple commands that aren't the last command in a
+	     pipeline change $? for the rest of the pipeline (or at all). */
+	  if (pipe_out != NO_PIPE)
+	    result = last_command_exit_value;
+	  close_pipes (pipe_in, pipe_out);
+#if defined (PROCESS_SUBSTITUTION) && defined (HAVE_DEV_FD)
+	  /* Close /dev/fd file descriptors in the parent after forking the
+	     last child in a (possibly one-element) pipeline.  Defer this
+	     until any running shell function completes. */
+	  if (pipe_out == NO_PIPE && variable_context == 0)	/* XXX */
+	    unlink_fifo_list ();		/* XXX */
+#endif
+	  command_line = (char *)NULL;      /* don't free this. */
+	  bind_lastarg ((char *)NULL);
+	  return (result);
+	}
+    }
+
+  QUIT;		/* XXX */
+
+  /* If we are re-running this as the result of executing the `command'
+     builtin, do not expand the command words a second time. */
+  if ((simple_command->flags & CMD_INHIBIT_EXPANSION) == 0)
+    {
+      current_fds_to_close = fds_to_close;
+      fix_assignment_words (simple_command->words);
+      /* Pass the ignore return flag down to command substitutions */
+      if (simple_command->flags & CMD_IGNORE_RETURN)	/* XXX */
+	comsub_ignore_return++;
+      words = expand_words (simple_command->words);
+      if (simple_command->flags & CMD_IGNORE_RETURN)
+	comsub_ignore_return--;
+      current_fds_to_close = (struct fd_bitmap *)NULL;
+    }
+  else
+    words = copy_word_list (simple_command->words);
+
+  /* It is possible for WORDS not to have anything left in it.
+     Perhaps all the words consisted of `$foo', and there was
+     no variable `$foo'. */
+  if (words == 0)
+    {
+      this_command_name = 0;
+      result = execute_null_command (simple_command->redirects,
+				     pipe_in, pipe_out,
+				     already_forked ? 0 : async);
+      if (already_forked)
+	sh_exit (result);
+      else
+	{
+	  bind_lastarg ((char *)NULL);
+	  set_pipestatus_from_exit (result);
+	  return (result);
+	}
+    }
+
+  lastarg = (char *)NULL;
+
+  begin_unwind_frame ("simple-command");
+
+  if (echo_command_at_execute)
+    xtrace_print_word_list (words, 1);
+
+  builtin = (sh_builtin_func_t *)NULL;
+  func = (SHELL_VAR *)NULL;
+  if ((simple_command->flags & CMD_NO_FUNCTIONS) == 0)
+    {
+      /* Posix.2 says special builtins are found before functions.  We
+	 don't set builtin_is_special anywhere other than here, because
+	 this path is followed only when the `command' builtin is *not*
+	 being used, and we don't want to exit the shell if a special
+	 builtin executed with `command builtin' fails.  `command' is not
+	 a special builtin. */
+      if (posixly_correct)
+	{
+	  builtin = find_special_builtin (words->word->word);
+	  if (builtin)
+	    builtin_is_special = 1;
+	}
+      if (builtin == 0)
+	func = find_function (words->word->word);
+    }
+
+  /* In POSIX mode, assignment errors in the temporary environment cause a
+     non-interactive shell to exit. */
+  if (posixly_correct && builtin_is_special && interactive_shell == 0 && tempenv_assign_error)
+    {
+      last_command_exit_value = EXECUTION_FAILURE;
+      jump_to_top_level (ERREXIT);
+    }
+  tempenv_assign_error = 0;	/* don't care about this any more */
+
+  add_unwind_protect (dispose_words, words);
+  QUIT;
+
+  /* Bind the last word in this command to "$_" after execution. */
+  for (lastword = words; lastword->next; lastword = lastword->next)
+    ;
+  lastarg = lastword->word->word;
+
+#if defined (JOB_CONTROL)
+  /* Is this command a job control related thing? */
+  if (words->word->word[0] == '%' && already_forked == 0)
+    {
+      this_command_name = async ? "bg" : "fg";
+      last_shell_builtin = this_shell_builtin;
+      this_shell_builtin = builtin_address (this_command_name);
+      result = (*this_shell_builtin) (words);
+      goto return_result;
+    }
+
+  /* One other possibililty.  The user may want to resume an existing job.
+     If they do, find out whether this word is a candidate for a running
+     job. */
+  if (job_control && already_forked == 0 && async == 0 &&
+	!first_word_quoted &&
+	!words->next &&
+	words->word->word[0] &&
+	!simple_command->redirects &&
+	pipe_in == NO_PIPE &&
+	pipe_out == NO_PIPE &&
+	(temp = get_string_value ("auto_resume")))
+    {
+      int job, jflags, started_status;
+
+      jflags = JM_STOPPED|JM_FIRSTMATCH;
+      if (STREQ (temp, "exact"))
+	jflags |= JM_EXACT;
+      else if (STREQ (temp, "substring"))
+	jflags |= JM_SUBSTRING;
+      else
+	jflags |= JM_PREFIX;
+      job = get_job_by_name (words->word->word, jflags);
+      if (job != NO_JOB)
+	{
+	  run_unwind_frame ("simple-command");
+	  this_command_name = "fg";
+	  last_shell_builtin = this_shell_builtin;
+	  this_shell_builtin = builtin_address ("fg");
+
+	  started_status = start_job (job, 1);
+	  return ((started_status < 0) ? EXECUTION_FAILURE : started_status);
+	}
+    }
+#endif /* JOB_CONTROL */
+
+run_builtin:
+  /* Remember the name of this command globally. */
+  this_command_name = words->word->word;
+
+  QUIT;
+
+  /* This command could be a shell builtin or a user-defined function.
+     We have already found special builtins by this time, so we do not
+     set builtin_is_special.  If this is a function or builtin, and we
+     have pipes, then fork a subshell in here.  Otherwise, just execute
+     the command directly. */
+  if (func == 0 && builtin == 0)
+    builtin = find_shell_builtin (this_command_name);
+
+  last_shell_builtin = this_shell_builtin;
+  this_shell_builtin = builtin;
+
+  if (builtin || func)
+    {
+      if (builtin)
+        {
+	  old_builtin = executing_builtin;
+	  old_command_builtin = executing_command_builtin;
+	  unwind_protect_int (executing_builtin);	/* modified in execute_builtin */
+	  unwind_protect_int (executing_command_builtin);	/* ditto */
+        }
+      if (already_forked)
+	{
+	  /* reset_terminating_signals (); */	/* XXX */
+	  /* Reset the signal handlers in the child, but don't free the
+	     trap strings.  Set a flag noting that we have to free the
+	     trap strings if we run trap to change a signal disposition. */
+	  reset_signal_handlers ();
+	  subshell_environment |= SUBSHELL_RESETTRAP;
+
+	  if (async)
+	    {
+	      if ((simple_command->flags & CMD_STDIN_REDIR) &&
+		    pipe_in == NO_PIPE &&
+		    (stdin_redirects (simple_command->redirects) == 0))
+		async_redirect_stdin ();
+	      setup_async_signals ();
+	    }
+
+	  if (async == 0)
+	    subshell_level++;
+	  execute_subshell_builtin_or_function
+	    (words, simple_command->redirects, builtin, func,
+	     pipe_in, pipe_out, async, fds_to_close,
+	     simple_command->flags);
+	  subshell_level--;
+	}
+      else
+	{
+	  result = execute_builtin_or_function
+	    (words, builtin, func, simple_command->redirects, fds_to_close,
+	     simple_command->flags);
+	  if (builtin)
+	    {
+	      if (result > EX_SHERRBASE)
+		{
+		  switch (result)
+		    {
+		    case EX_REDIRFAIL:
+		    case EX_BADASSIGN:
+		    case EX_EXPFAIL:
+		      /* These errors cause non-interactive posix mode shells to exit */
+		      if (posixly_correct && builtin_is_special && interactive_shell == 0)
+			{
+			  last_command_exit_value = EXECUTION_FAILURE;
+			  jump_to_top_level (ERREXIT);
+			}
+		    }
+		  result = builtin_status (result);
+		  if (builtin_is_special)
+		    special_builtin_failed = 1;
+		}
+	      /* In POSIX mode, if there are assignment statements preceding
+		 a special builtin, they persist after the builtin
+		 completes. */
+	      if (posixly_correct && builtin_is_special && temporary_env)
+		merge_temporary_env ();
+	    }
+	  else		/* function */
+	    {
+	      if (result == EX_USAGE)
+		result = EX_BADUSAGE;
+	      else if (result > EX_SHERRBASE)
+		result = EXECUTION_FAILURE;
+	    }
+
+	  set_pipestatus_from_exit (result);
+
+	  goto return_result;
+	}
+    }
+
+  if (autocd && interactive && words->word && is_dirname (words->word->word))
+    {
+      words = make_word_list (make_word ("--"), words);
+      words = make_word_list (make_word ("cd"), words);
+      xtrace_print_word_list (words, 0);
+      func = find_function ("cd");
+      goto run_builtin;
+    }
+
+  if (command_line == 0)
+    command_line = savestring (the_printed_command_except_trap ? the_printed_command_except_trap : "");
+
+#if defined (PROCESS_SUBSTITUTION)
+  /* The old code did not test already_forked and only did this if
+     subshell_environment&SUBSHELL_COMSUB != 0 (comsubs and procsubs). Other
+     uses of the no-fork optimization left FIFOs in $TMPDIR */
+  if (already_forked == 0 && (simple_command->flags & CMD_NO_FORK) && fifos_pending() > 0)
+    simple_command->flags &= ~CMD_NO_FORK;
+#endif
+  result = execute_disk_command (words, simple_command->redirects, command_line,
+			pipe_in, pipe_out, async, fds_to_close,
+			simple_command->flags);
+
+ return_result:
+  bind_lastarg (lastarg);
+  FREE (command_line);
+  dispose_words (words);
+  if (builtin)
+    {
+      executing_builtin = old_builtin;
+      executing_command_builtin = old_command_builtin;
+    }
+  discard_unwind_frame ("simple-command");
+  this_command_name = (char *)NULL;	/* points to freed memory now */
+  return (result);
 }
 
+/* Translate the special builtin exit statuses.  We don't really need a
+   function for this; it's a placeholder for future work. */
+static int
+builtin_status (result)
+     int result;
+{
+  int r;
 
+  switch (result)
+    {
+    case EX_USAGE:
+      r = EX_BADUSAGE;
+      break;
+    case EX_REDIRFAIL:
+    case EX_BADSYNTAX:
+    case EX_BADASSIGN:
+    case EX_EXPFAIL:
+      r = EXECUTION_FAILURE;
+      break;
+    default:
+      r = EXECUTION_SUCCESS;
+      break;
+    }
+  return (r);
+}
 
-#ifndef __NT_VC__
-static
-#endif
-int
+static int
 execute_builtin (builtin, words, flags, subshell)
-     Function *builtin;
+     sh_builtin_func_t *builtin;
      WORD_LIST *words;
      int flags, subshell;
 {
-  int old_e_flag = exit_immediately_on_error;
-  int result;
+  int result, eval_unwind, ignexit_flag, old_e_flag;
+  int isbltinenv;
+  char *error_trap;
+
+  error_trap = 0;
 
   /* The eval builtin calls parse_and_execute, which does not know about
      the setting of flags, and always calls the execution functions with
      flags that will exit the shell on an error if -e is set.  If the
      eval builtin is being called, and we're supposed to ignore the exit
-     value of the command, we turn the -e flag off ourselves, then
-     restore it when the command completes. */
-  if (subshell == 0 && builtin == eval_builtin && (flags & CMD_IGNORE_RETURN))
+     value of the command, we turn the -e flag off ourselves and disable
+     the ERR trap, then restore them when the command completes.  This is
+     also a problem (as below) for the command and source/. builtins. */
+  if (subshell == 0 && (flags & CMD_IGNORE_RETURN) &&
+	(builtin == eval_builtin || builtin == command_builtin || builtin == source_builtin))
     {
       begin_unwind_frame ("eval_builtin");
       unwind_protect_int (exit_immediately_on_error);
+      unwind_protect_int (builtin_ignoring_errexit);
+      error_trap = TRAP_STRING (ERROR_TRAP);
+      if (error_trap)
+	{
+	  error_trap = savestring (error_trap);
+	  add_unwind_protect (xfree, error_trap);
+	  add_unwind_protect (set_error_trap, error_trap);
+	  restore_default_signal (ERROR_TRAP);
+	}
       exit_immediately_on_error = 0;
+      ignexit_flag = builtin_ignoring_errexit;
+      builtin_ignoring_errexit = 1;
+      eval_unwind = 1;
     }
+  else
+    eval_unwind = 0;
 
   /* The temporary environment for a builtin is supposed to apply to
      all commands executed by that builtin.  Currently, this is a
-     problem only with the `source' builtin. */
-  if (builtin == source_builtin)
+     problem only with the `unset', `source' and `eval' builtins.
+     `mapfile' is a special case because it uses evalstring (same as
+     eval or source) to run its callbacks. */
+  isbltinenv = (builtin == source_builtin || builtin == eval_builtin || builtin == unset_builtin || builtin == mapfile_builtin);
+
+  if (isbltinenv)
     {
       if (subshell == 0)
-   begin_unwind_frame ("builtin_env");
+	begin_unwind_frame ("builtin_env");
 
       if (temporary_env)
-   {
-     builtin_env = copy_array (temporary_env);
-     if (subshell == 0)
-       add_unwind_protect (dispose_builtin_env, (char *)NULL);
-     dispose_used_env_vars ();
-   }
-      else
-   builtin_env = (char **)NULL;
+	{
+	  push_scope (VC_BLTNENV, temporary_env);
+	  if (subshell == 0)
+	    add_unwind_protect (pop_scope, (flags & CMD_COMMAND_BUILTIN) ? 0 : "1");
+          temporary_env = (HASH_TABLE *)NULL;	  
+	}
     }
 
-  /*fprintf(stderr, "Calling builtin function %x\n", builtin); fflush(stderr);*/
+  if (subshell == 0 && builtin == eval_builtin)
+    {
+      if (evalnest_max > 0 && evalnest >= evalnest_max)
+	{
+	  internal_error (_("eval: maximum eval nesting level exceeded (%d)"), evalnest);
+	  evalnest = 0;
+	  jump_to_top_level (DISCARD);
+	}
+      unwind_protect_int (evalnest);
+      /* The test for subshell == 0 above doesn't make a difference */
+      evalnest++;	/* execute_subshell_builtin_or_function sets this to 0 */
+    }
+  else if (subshell == 0 && builtin == source_builtin)
+    {
+      if (sourcenest_max > 0 && sourcenest >= sourcenest_max)
+	{
+	  internal_error (_("%s: maximum source nesting level exceeded (%d)"), this_command_name, sourcenest);
+	  sourcenest = 0;
+	  jump_to_top_level (DISCARD);
+	}
+      unwind_protect_int (sourcenest);
+      /* The test for subshell == 0 above doesn't make a difference */
+      sourcenest++;	/* execute_subshell_builtin_or_function sets this to 0 */
+    }
+
+  /* `return' does a longjmp() back to a saved environment in execute_function.
+     If a variable assignment list preceded the command, and the shell is
+     running in POSIX mode, we need to merge that into the shell_variables
+     table, since `return' is a POSIX special builtin. */
+  if (posixly_correct && subshell == 0 && builtin == return_builtin && temporary_env)
+    {
+      begin_unwind_frame ("return_temp_env");
+      add_unwind_protect (merge_temporary_env, (char *)NULL);
+    }
+
+  executing_builtin++;
+  executing_command_builtin |= builtin == command_builtin;
   result = ((*builtin) (words->next));
 
-  if (subshell == 0 && builtin == source_builtin)
-    {
-      dispose_builtin_env ();
-      discard_unwind_frame ("builtin_env");
-    }
+  /* This shouldn't happen, but in case `return' comes back instead of
+     longjmp'ing, we need to unwind. */
+  if (posixly_correct && subshell == 0 && builtin == return_builtin && temporary_env)
+    discard_unwind_frame ("return_temp_env");
 
-  if (subshell == 0 && builtin == eval_builtin && (flags & CMD_IGNORE_RETURN))
+  if (subshell == 0 && isbltinenv)
+    run_unwind_frame ("builtin_env");
+
+  if (eval_unwind)
     {
-      exit_immediately_on_error += old_e_flag;
+      builtin_ignoring_errexit = ignexit_flag;
+      exit_immediately_on_error = builtin_ignoring_errexit ? 0 : errexit_flag;
+      if (error_trap)
+	{
+	  set_error_trap (error_trap);
+	  xfree (error_trap);
+	}
       discard_unwind_frame ("eval_builtin");
     }
 
   return (result);
 }
 
-/* XXX -- why do we need to set up unwind-protects for the case where
-   subshell == 1 at all? */
-#ifndef __NT_VC__
-static
+static void
+maybe_restore_getopt_state (gs)
+     sh_getopt_state_t *gs;
+{
+  SHELL_VAR *v;
+
+  /* If we have a local copy of OPTIND and it's at the right (current)
+     context, then we restore getopt's internal state.  If not, we just
+     let it go.  We know there is a local OPTIND if gs->gs_flags & 1.
+     This is set below in execute_function() before the context is run. */
+  if (gs->gs_flags & 1)
+    sh_getopt_restore_istate (gs);
+  else
+    free (gs);
+}
+
+#if defined (ARRAY_VARS)
+void
+restore_funcarray_state (fa)
+     struct func_array_state *fa;
+{
+  SHELL_VAR *nfv;
+  ARRAY *funcname_a;
+
+  array_pop (fa->source_a);
+  array_pop (fa->lineno_a);
+
+  GET_ARRAY_FROM_VAR ("FUNCNAME", nfv, funcname_a);
+  if (nfv == fa->funcname_v)
+    array_pop (funcname_a);
+
+  free (fa);
+}
 #endif
-int
+
+static int
 execute_function (var, words, flags, fds_to_close, async, subshell)
      SHELL_VAR *var;
      WORD_LIST *words;
-     int flags, subshell, async;
+     int flags;
      struct fd_bitmap *fds_to_close;
+     int async, subshell;
 {
   int return_val, result;
-  COMMAND *tc, *fc;
+  COMMAND *tc, *fc, *save_current;
+  char *debug_trap, *error_trap, *return_trap;
+#if defined (ARRAY_VARS)
+  SHELL_VAR *funcname_v, *bash_source_v, *bash_lineno_v;
+  ARRAY *funcname_a;
+  volatile ARRAY *bash_source_a;
+  volatile ARRAY *bash_lineno_a;
+  struct func_array_state *fa;
+#endif
+  FUNCTION_DEF *shell_fn;
+  char *sfile, *t;
+  sh_getopt_state_t *gs;
+  SHELL_VAR *gv;
+
+  USE_VAR(fc);
+
+  if (funcnest_max > 0 && funcnest >= funcnest_max)
+    {
+      internal_error (_("%s: maximum function nesting level exceeded (%d)"), var->name, funcnest);
+      funcnest = 0;	/* XXX - should we reset it somewhere else? */
+      jump_to_top_level (DISCARD);
+    }
+
+#if defined (ARRAY_VARS)
+  GET_ARRAY_FROM_VAR ("FUNCNAME", funcname_v, funcname_a);
+  GET_ARRAY_FROM_VAR ("BASH_SOURCE", bash_source_v, bash_source_a);
+  GET_ARRAY_FROM_VAR ("BASH_LINENO", bash_lineno_v, bash_lineno_a);
+#endif
 
   tc = (COMMAND *)copy_command (function_cell (var));
   if (tc && (flags & CMD_IGNORE_RETURN))
     tc->flags |= CMD_IGNORE_RETURN;
 
-  if (subshell)
-    begin_unwind_frame ("subshell_function_calling");
-  else
-    begin_unwind_frame ("function_calling");
-
+  gs = sh_getopt_save_istate ();
   if (subshell == 0)
     {
-      push_context ();
+      begin_unwind_frame ("function_calling");
+      push_context (var->name, subshell, temporary_env);
+      /* This has to be before the pop_context(), because the unwinding of
+	 local variables may cause the restore of a local declaration of
+	 OPTIND to force a getopts state reset. */
+      add_unwind_protect (maybe_restore_getopt_state, gs);
       add_unwind_protect (pop_context, (char *)NULL);
       unwind_protect_int (line_number);
+      unwind_protect_int (line_number_for_err_trap);
+      unwind_protect_int (function_line_number);
+      unwind_protect_int (return_catch_flag);
+      unwind_protect_jmp_buf (return_catch);
+      add_unwind_protect (dispose_command, (char *)tc);
+      unwind_protect_pointer (this_shell_function);
+      unwind_protect_int (funcnest);
+      unwind_protect_int (loop_level);
     }
   else
-    unwind_protect_int (variable_context);
+    push_context (var->name, subshell, temporary_env);	/* don't unwind-protect for subshells */
 
-  unwind_protect_int (loop_level);
-  unwind_protect_int (return_catch_flag);
-  unwind_protect_jmp_buf (return_catch);
-  add_unwind_protect (dispose_command, (char *)tc);
+  temporary_env = (HASH_TABLE *)NULL;
+
+  this_shell_function = var;
+  make_funcname_visible (1);
+
+  debug_trap = TRAP_STRING(DEBUG_TRAP);
+  error_trap = TRAP_STRING(ERROR_TRAP);
+  return_trap = TRAP_STRING(RETURN_TRAP);
+  
+  /* The order of the unwind protects for debug_trap, error_trap and
+     return_trap is important here!  unwind-protect commands are run
+     in reverse order of registration.  If this causes problems, take
+     out the xfree unwind-protect calls and live with the small memory leak. */
+
+  /* function_trace_mode != 0 means that all functions inherit the DEBUG trap.
+     if the function has the trace attribute set, it inherits the DEBUG trap */
+  if (debug_trap && ((trace_p (var) == 0) && function_trace_mode == 0))
+    {
+      if (subshell == 0)
+	{
+	  debug_trap = savestring (debug_trap);
+	  add_unwind_protect (xfree, debug_trap);
+	  add_unwind_protect (maybe_set_debug_trap, debug_trap);
+	}
+      restore_default_signal (DEBUG_TRAP);
+    }
+
+  /* error_trace_mode != 0 means that functions inherit the ERR trap. */
+  if (error_trap && error_trace_mode == 0)
+    {
+      if (subshell == 0)
+	{
+	  error_trap = savestring (error_trap);
+	  add_unwind_protect (xfree, error_trap);
+	  add_unwind_protect (maybe_set_error_trap, error_trap);
+	}
+      restore_default_signal (ERROR_TRAP);
+    }
+
+  /* Shell functions inherit the RETURN trap if function tracing is on
+     globally or on individually for this function. */
+#if 0
+  if (return_trap && ((trace_p (var) == 0) && function_trace_mode == 0))
+#else
+  if (return_trap && (signal_in_progress (DEBUG_TRAP) || ((trace_p (var) == 0) && function_trace_mode == 0)))
+#endif
+    {
+      if (subshell == 0)
+	{
+	  return_trap = savestring (return_trap);
+	  add_unwind_protect (xfree, return_trap);
+	  add_unwind_protect (maybe_set_return_trap, return_trap);
+	}
+      restore_default_signal (RETURN_TRAP);
+    }
+  
+  funcnest++;
+#if defined (ARRAY_VARS)
+  /* This is quite similar to the code in shell.c and elsewhere. */
+  shell_fn = find_function_def (this_shell_function->name);
+  sfile = shell_fn ? shell_fn->source_file : "";
+  array_push ((ARRAY *)funcname_a, this_shell_function->name);
+
+  array_push ((ARRAY *)bash_source_a, sfile);
+  t = itos (executing_line_number ());
+  array_push ((ARRAY *)bash_lineno_a, t);
+  free (t);
+#endif
+
+#if defined (ARRAY_VARS)
+  fa = (struct func_array_state *)xmalloc (sizeof (struct func_array_state));
+  fa->source_a = (ARRAY *)bash_source_a;
+  fa->source_v = bash_source_v;
+  fa->lineno_a = (ARRAY *)bash_lineno_a;
+  fa->lineno_v = bash_lineno_v;
+  fa->funcname_a = (ARRAY *)funcname_a;
+  fa->funcname_v = funcname_v;
+  if (subshell == 0)
+    add_unwind_protect (restore_funcarray_state, fa);
+#endif
 
   /* The temporary environment for a function is supposed to apply to
      all commands executed within the function body. */
-  if (temporary_env)
-    {
-      function_env = copy_array (temporary_env);
-      add_unwind_protect (dispose_function_env, (char *)NULL);
-      dispose_used_env_vars ();
-    }
-  else
-    function_env = (char **)NULL;
 
-  /* Note the second argument of "1", meaning that we discard
-     the current value of "$*"!  This is apparently the right thing. */
   remember_args (words->next, 1);
 
+  /* Update BASH_ARGV and BASH_ARGC */
+  if (debugging_mode)
+    {
+      push_args (words->next);
+      if (subshell == 0)
+	add_unwind_protect (pop_args, 0);
+    }
+
+  /* Number of the line on which the function body starts. */
   line_number = function_line_number = tc->line;
 
-  if (subshell)
-    {
 #if defined (JOB_CONTROL)
-      stop_pipeline (async, (COMMAND *)NULL);
+  if (subshell)
+    stop_pipeline (async, (COMMAND *)NULL);
 #endif
-      if (tc->type == cm_group)
-   fc = tc->value.Group->command;
-      else
-   fc = tc;
 
-      if (fc && (flags & CMD_IGNORE_RETURN))
-   fc->flags |= CMD_IGNORE_RETURN;
+  if (shell_compatibility_level > 43)
+    loop_level = 0;
 
-      variable_context++;
-    }
-  else
-    fc = tc;
+  fc = tc;
+
+  from_return_trap = 0;
 
   return_catch_flag++;
- /*  return_val = SETJMP(return_catch);*/
-  SETJMP(return_val, return_catch);
+  return_val = setjmp_nosigs (return_catch);
 
   if (return_val)
-  {
-    result = return_catch_value;
-  }
+    {
+      result = return_catch_value;
+      /* Run the RETURN trap in the function's context. */
+      save_current = currently_executing_command;
+      if (from_return_trap == 0)
+	run_return_trap ();
+      currently_executing_command = save_current;
+    }
   else
-  {
-    result = execute_command_internal (fc, 0, NO_PIPE, NO_PIPE, fds_to_close);
-  }
+    {
+      /* Run the debug trap here so we can trap at the start of a function's
+	 execution rather than the execution of the body's first command. */
+      showing_function_line = 1;
+      save_current = currently_executing_command;
+      result = run_debug_trap ();
+#if defined (DEBUGGER)
+      /* In debugging mode, if the DEBUG trap returns a non-zero status, we
+	 skip the command. */
+      if (debugging_mode == 0 || result == EXECUTION_SUCCESS)
+	{
+	  showing_function_line = 0;
+	  currently_executing_command = save_current;
+	  result = execute_command_internal (fc, 0, NO_PIPE, NO_PIPE, fds_to_close);
 
-  if (subshell)
-  {
-    run_unwind_frame ("subshell_function_calling");
-  }
-  else
-  {
+	  /* Run the RETURN trap in the function's context */
+	  save_current = currently_executing_command;
+	  run_return_trap ();
+	  currently_executing_command = save_current;
+	}
+#else
+      result = execute_command_internal (fc, 0, NO_PIPE, NO_PIPE, fds_to_close);
+
+      save_current = currently_executing_command;
+      run_return_trap ();
+      currently_executing_command = save_current;
+#endif
+      showing_function_line = 0;
+    }
+
+  /* If we have a local copy of OPTIND, note it in the saved getopts state. */
+  gv = find_variable ("OPTIND");
+  if (gv && gv->context == variable_context)
+    gs->gs_flags |= 1;
+
+  if (subshell == 0)
     run_unwind_frame ("function_calling");
-  }
+#if defined (ARRAY_VARS)
+  else
+    {
+      restore_funcarray_state (fa);
+      /* Restore BASH_ARGC and BASH_ARGV */
+      if (debugging_mode)
+	pop_args ();
+    }
+#endif
+
+  if (variable_context == 0 || this_shell_function == 0)
+    {
+      make_funcname_visible (0);
+#if defined (PROCESS_SUBSTITUTION)
+      unlink_fifo_list ();
+#endif
+    }
 
   return (result);
+}
+
+/* A convenience routine for use by other parts of the shell to execute
+   a particular shell function. */
+int
+execute_shell_function (var, words)
+     SHELL_VAR *var;
+     WORD_LIST *words;
+{
+  int ret;
+  struct fd_bitmap *bitmap;
+
+  bitmap = new_fd_bitmap (FD_BITMAP_DEFAULT_SIZE);
+  begin_unwind_frame ("execute-shell-function");
+  add_unwind_protect (dispose_fd_bitmap, (char *)bitmap);
+      
+  ret = execute_function (var, words, 0, bitmap, 0, 0);
+
+  dispose_fd_bitmap (bitmap);
+  discard_unwind_frame ("execute-shell-function");
+
+  return ret;
 }
 
 /* Execute a shell builtin or function in a subshell environment.  This
@@ -2287,22 +4861,37 @@ execute_function (var, words, flags, fds_to_close, async, subshell)
    command is executed. */
 static void
 execute_subshell_builtin_or_function (words, redirects, builtin, var,
-                  pipe_in, pipe_out, async, fds_to_close,
-                  flags)
+				      pipe_in, pipe_out, async, fds_to_close,
+				      flags)
      WORD_LIST *words;
      REDIRECT *redirects;
-     Function *builtin;
+     sh_builtin_func_t *builtin;
      SHELL_VAR *var;
      int pipe_in, pipe_out, async;
      struct fd_bitmap *fds_to_close;
      int flags;
 {
+  int result, r, funcvalue;
+#if defined (JOB_CONTROL)
+  int jobs_hack;
+
+  jobs_hack = (builtin == jobs_builtin) &&
+		((subshell_environment & SUBSHELL_ASYNC) == 0 || pipe_out != NO_PIPE);
+#endif
+
   /* A subshell is neither a login shell nor interactive. */
   login_shell = interactive = 0;
+  if (builtin == eval_builtin)
+    evalnest = 0;
+  else if (builtin == source_builtin)
+    sourcenest = 0;
 
-  subshell_environment = 1;
+  if (async)
+    subshell_environment |= SUBSHELL_ASYNC;
+  if (pipe_in != NO_PIPE || pipe_out != NO_PIPE)
+    subshell_environment |= SUBSHELL_PIPE;
 
-  maybe_make_export_env ();
+  maybe_make_export_env ();	/* XXX - is this needed? */
 
 #if defined (JOB_CONTROL)
   /* Eradicate all traces of job control after we fork the subshell, so
@@ -2310,8 +4899,7 @@ execute_subshell_builtin_or_function (words, redirects, builtin, var,
      the shell itself. */
 
   /* Allow the output of `jobs' to be piped. */
-  if (builtin == jobs_builtin && !async &&
-      (pipe_out != NO_PIPE || pipe_in != NO_PIPE))
+  if (jobs_hack)
     kill_current_pipeline ();
   else
     without_job_control ();
@@ -2321,64 +4909,47 @@ execute_subshell_builtin_or_function (words, redirects, builtin, var,
 
   set_sigint_handler ();
 
-  do_piping (pipe_in, pipe_out);
-
   if (fds_to_close)
     close_fd_bitmap (fds_to_close);
 
-  if (do_redirections (redirects, 1, 0, 0) != 0)
-  {
-#ifndef  __NT_VC__
+  do_piping (pipe_in, pipe_out);
+
+  if (do_redirections (redirects, RX_ACTIVE) != 0)
     exit (EXECUTION_FAILURE);
-#else
-    return;
-#endif
-  }
 
   if (builtin)
     {
-      int result;
-
       /* Give builtins a place to jump back to on failure,
-    so we don't go back up to main(). */
-     /* result = SETJMP(top_level);*/
-      SETJMP(result, top_level);
+	 so we don't go back up to main(). */
+      result = setjmp_nosigs (top_level);
+
+      /* Give the return builtin a place to jump to when executed in a subshell
+         or pipeline */
+      funcvalue = 0;
+      if (return_catch_flag && builtin == return_builtin)
+        funcvalue = setjmp_nosigs (return_catch);
 
       if (result == EXITPROG)
-      {
-#ifndef  __NT_VC__
-         exit (last_command_exit_value);
-#else
-         return;
-#endif
-      }
+	exit (last_command_exit_value);
       else if (result)
-      {
-#ifndef  __NT_VC__
-         exit (EXECUTION_FAILURE);
-#else
-         return;
-#endif
-      }
+	exit (EXECUTION_FAILURE);
+      else if (funcvalue)
+	exit (return_catch_value);
       else
-      {
-#ifndef  __NT_VC__
-         exit (execute_builtin (builtin, words, flags, 1));
-#else
-         execute_builtin (builtin, words, flags, 1);
-    return;
-#endif
-      }
+	{
+	  r = execute_builtin (builtin, words, flags, 1);
+	  fflush (stdout);
+	  if (r == EX_USAGE)
+	    r = EX_BADUSAGE;
+	  sh_exit (r);
+	}
     }
   else
-  {
-#ifndef  __NT_VC__
-     exit (execute_function (var, words, flags, fds_to_close, async, 1));
-#else
-     execute_function (var, words, flags, fds_to_close, async, 1);
-     return;
-#endif
-  }
+    {
+      r = execute_function (var, words, flags, fds_to_close, async, 1);
+      fflush (stdout);
+      sh_exit (r);
+    }
 }
 
 /* Execute a builtin or function in the current shell context.  If BUILTIN
@@ -2391,23 +4962,35 @@ execute_subshell_builtin_or_function (words, redirects, builtin, var,
    not undone before this function returns. */
 static int
 execute_builtin_or_function (words, builtin, var, redirects,
-              fds_to_close, flags)
+			     fds_to_close, flags)
      WORD_LIST *words;
-     Function *builtin;
+     sh_builtin_func_t *builtin;
      SHELL_VAR *var;
      REDIRECT *redirects;
      struct fd_bitmap *fds_to_close;
      int flags;
 {
-  int result = EXECUTION_FAILURE;
+  int result;
   REDIRECT *saved_undo_list;
+#if defined (PROCESS_SUBSTITUTION)
+  int ofifo, nfifo, osize;
+  char *ofifo_list;
+#endif
 
-  if (do_redirections (redirects, 1, 1, 0) != 0)
+#if defined (PROCESS_SUBSTITUTION)  
+  ofifo = num_fifos ();
+  ofifo_list = copy_fifo_list (&osize);
+#endif
+
+  if (do_redirections (redirects, RX_ACTIVE|RX_UNDOABLE) != 0)
     {
       cleanup_redirects (redirection_undo_list);
       redirection_undo_list = (REDIRECT *)NULL;
       dispose_exec_redirects ();
-      return (EXECUTION_FAILURE);
+#if defined (PROCESS_SUBSTITUTION)
+      free (ofifo_list);
+#endif
+      return (EX_REDIRFAIL);	/* was EXECUTION_FAILURE */
     }
 
   saved_undo_list = redirection_undo_list;
@@ -2424,41 +5007,64 @@ execute_builtin_or_function (words, builtin, var, redirects,
 
   if (saved_undo_list)
     {
-      begin_unwind_frame ("saved redirects");
-      add_unwind_protect (cleanup_func_redirects, (char *)saved_undo_list);
-      add_unwind_protect (dispose_redirects, (char *)saved_undo_list);
+      begin_unwind_frame ("saved-redirects");
+      add_unwind_protect (cleanup_redirects, (char *)saved_undo_list);
     }
 
   redirection_undo_list = (REDIRECT *)NULL;
 
   if (builtin)
-  {
-     result = execute_builtin (builtin, words, flags, 0);
-  }
+    result = execute_builtin (builtin, words, flags, 0);
   else
-  {
     result = execute_function (var, words, flags, fds_to_close, 0, 0);
-  }
 
-#ifdef __NT_VC__
-   fflush(stdout);
-#endif
+  /* We do this before undoing the effects of any redirections. */
+  fflush (stdout);
+  fpurge (stdout);
+  if (ferror (stdout))
+    clearerr (stdout);  
+
+  /* If we are executing the `command' builtin, but this_shell_builtin is
+     set to `exec_builtin', we know that we have something like
+     `command exec [redirection]', since otherwise `exec' would have
+     overwritten the shell and we wouldn't get here.  In this case, we
+     want to behave as if the `command' builtin had not been specified
+     and preserve the redirections. */
+  if (builtin == command_builtin && this_shell_builtin == exec_builtin)
+    {
+      int discard;
+
+      discard = 0;
+      if (saved_undo_list)
+	{
+	  dispose_redirects (saved_undo_list);
+	  discard = 1;
+	}
+      redirection_undo_list = exec_redirection_undo_list;
+      saved_undo_list = exec_redirection_undo_list = (REDIRECT *)NULL;      
+      if (discard)
+	discard_unwind_frame ("saved-redirects");
+    }
 
   if (saved_undo_list)
     {
       redirection_undo_list = saved_undo_list;
-      discard_unwind_frame ("saved redirects");
+      discard_unwind_frame ("saved-redirects");
     }
 
   if (redirection_undo_list)
     {
-       /*
-      do_redirections (redirection_undo_list, 1, 0, 0);
-      dispose_redirects (redirection_undo_list);
-       */
-       cleanup_redirects(redirection_undo_list);
+      cleanup_redirects (redirection_undo_list);
       redirection_undo_list = (REDIRECT *)NULL;
     }
+
+#if defined (PROCESS_SUBSTITUTION)
+  /* Close any FIFOs created by this builtin or function. */
+  nfifo = num_fifos ();
+  if (nfifo > ofifo)
+    close_new_fifos (ofifo_list, osize);
+  free (ofifo_list);
+#endif
 
   return (result);
 }
@@ -2466,16 +5072,23 @@ execute_builtin_or_function (words, builtin, var, redirects,
 void
 setup_async_signals ()
 {
+#if defined (__BEOS__)
+  set_signal_handler (SIGHUP, SIG_IGN);	/* they want csh-like behavior */
+#endif
+
 #if defined (JOB_CONTROL)
   if (job_control == 0)
 #endif
     {
+      /* Make sure we get the original signal dispositions now so we don't
+	 confuse the trap builtin later if the subshell tries to use it to
+	 reset SIGINT/SIGQUIT.  Don't call set_signal_ignored; that sets
+	 the value of original_signals to SIG_IGN. Posix interpretation 751. */
+      get_original_signal (SIGINT);
       set_signal_handler (SIGINT, SIG_IGN);
-      set_signal_ignored (SIGINT);
-#ifndef __NT_VC__
+
+      get_original_signal (SIGQUIT);
       set_signal_handler (SIGQUIT, SIG_IGN);
-      set_signal_ignored (SIGQUIT);
-#endif
     }
 }
 
@@ -2494,213 +5107,206 @@ setup_async_signals ()
    Note that the filename hashing stuff has to take place up here,
    in the parent.  This is probably why the Bourne style shells
    don't handle it, since that would require them to go through
-   this gnarly hair, for no good reason.  */
+   this gnarly hair, for no good reason.
+
+   NOTE: callers expect this to fork or exit(). */
+
+/* Name of a shell function to call when a command name is not found. */
+#ifndef NOTFOUND_HOOK
+#  define NOTFOUND_HOOK "command_not_found_handle"
+#endif
+
 static int
 execute_disk_command (words, redirects, command_line, pipe_in, pipe_out,
-            async, fds_to_close, nofork)
+		      async, fds_to_close, cmdflags)
      WORD_LIST *words;
      REDIRECT *redirects;
      char *command_line;
      int pipe_in, pipe_out, async;
      struct fd_bitmap *fds_to_close;
-     int nofork;	/* Don't fork, just exec, if no pipes */
+     int cmdflags;
 {
-  register char *pathname;
-  char *hashed_file, *command, **args;
-  int pid, temp_path;
-  SHELL_VAR *path;
+  char *pathname, *command, **args;
+  int nofork, stdpath, result;
+  pid_t pid;
+  SHELL_VAR *hookf;
+  WORD_LIST *wl;
 
+  stdpath = (cmdflags & CMD_STDPATH);	/* use command -p path */
+  nofork = (cmdflags & CMD_NO_FORK);	/* Don't fork, just exec, if no pipes */
   pathname = words->word->word;
+
+  result = EXECUTION_SUCCESS;
 #if defined (RESTRICTED_SHELL)
-  if (restricted && strchr (pathname, '/'))
+  command = (char *)NULL;
+  if (restricted && mbschr (pathname, '/'))
     {
-      report_error ("%s: restricted: cannot specify `/' in command names",
-          pathname);
-      last_command_exit_value = EXECUTION_FAILURE;
-      return(EXECUTION_FAILURE);
+      internal_error (_("%s: restricted: cannot specify `/' in command names"),
+		    pathname);
+      result = last_command_exit_value = EXECUTION_FAILURE;
+
+      /* If we're not going to fork below, we must already be in a child
+         process or a context in which it's safe to call exit(2).  */
+      if (nofork && pipe_in == NO_PIPE && pipe_out == NO_PIPE)
+	exit (last_command_exit_value);
+      else
+	goto parent_return;
     }
 #endif /* RESTRICTED_SHELL */
 
-  hashed_file = command = (char *)NULL;
-
-  /* If PATH is in the temporary environment for this command, don't use the
-     hash table to search for the full pathname. */
-  temp_path = 0;
-  path = find_tempenv_variable ("PATH");
-  if (path)
-    temp_path = 1;
-
-  /* Don't waste time trying to find hashed data for a pathname
-     that is already completely specified. */
-
-  if (!path && !absolute_program (pathname))
-#ifndef __NT_VC__
-    hashed_file = find_hashed_filename (pathname);
-#else
-    hashed_file = find_hashed_filename_nt (pathname);
-#endif
-
-  /* If a command found in the hash table no longer exists, we need to
-     look for it in $PATH.  Thank you Posix.2.  This forces us to stat
-     every command found in the hash table.  It seems pretty stupid to me,
-     so I am basing it on the presence of POSIXLY_CORRECT. */
-
-  if (hashed_file && posixly_correct)
-    {
-      int st;
-
-      st = file_status (hashed_file);
-      if ((st ^ (FS_EXISTS | FS_EXECABLE)) != 0)
-   {
-     remove_hashed_filename (pathname);
-     hashed_file = (char *)NULL;
-   }
-    }
-
-  if (hashed_file)
-    command = savestring (hashed_file);
-  else if (absolute_program (pathname))
-  {
-     /* A command containing a slash is not looked up in PATH or saved in
-        the hash table. */
-     command = savestring (pathname);
-
-#ifdef __NT_VC__
-     {
-        /* check for files with exec extension */
-        int status = 0;
-
-        status = nt_file_exe_status (&command);
-
-        if (!(status & FS_EXISTS))
-        {
-           free(command);
-           command =  savestring(pathname);
-        }
-     }
-#endif
-  }
-  else
-    {
-      command = find_user_command (pathname);
-      if (command && !hashing_disabled && !temp_path)
-   remember_filename (pathname, command, dot_found_in_search, 1);
-    }
-
-  maybe_make_export_env ();
+  command = search_for_command (pathname, CMDSRCH_HASH|(stdpath ? CMDSRCH_STDPATH : 0));
 
   if (command)
-    put_command_name_into_env (command);
+    {
+      maybe_make_export_env ();
+      put_command_name_into_env (command);
+    }
 
-  /* We have to make the child before we check for the non-existance
+  /* We have to make the child before we check for the non-existence
      of COMMAND, since we want the error messages to be redirected. */
   /* If we can get away without forking and there are no pipes to deal with,
      don't bother to fork, just directly exec the command. */
   if (nofork && pipe_in == NO_PIPE && pipe_out == NO_PIPE)
     pid = 0;
   else
-#ifdef __NT_VC__ /* NT has no fork and this code is substantially different */
-   {
-      int iRc = 0;
-
-      iRc = nt_execute_disk_command (words, redirects, command, pipe_in,
-                                     pipe_out, async, fds_to_close, nofork,0);
-
-      /* Make sure that the pipes are closed in the parent. */
-        close_pipes (pipe_in, pipe_out);
-#if defined (PROCESS_SUBSTITUTION) && defined (HAVE_DEV_FD)
-        unlink_fifo_list ();
-#endif
-        // FREE (command);
-        return(iRc) ;
-   }
-#else /* ifdef __NT_VC__ */
     pid = make_child (savestring (command_line), async);
-#endif
 
   if (pid == 0)
     {
       int old_interactive;
 
+      reset_terminating_signals ();	/* XXX */
       /* Cancel traps, in trap.c. */
       restore_original_signals ();
 
+      CHECK_SIGTERM;
+
       /* restore_original_signals may have undone the work done
-         by make_child to ensure that SIGINT and SIGQUIT are ignored
-         in asynchronous children. */
+	 by make_child to ensure that SIGINT and SIGQUIT are ignored
+	 in asynchronous children. */
       if (async)
-         setup_async_signals ();
+	{
+	  if ((cmdflags & CMD_STDIN_REDIR) &&
+		pipe_in == NO_PIPE &&
+		(stdin_redirects (redirects) == 0))
+	    async_redirect_stdin ();
+	  setup_async_signals ();
+	}
+
+      /* This functionality is now provided by close-on-exec of the
+	 file descriptors manipulated by redirection and piping.
+	 Some file descriptors still need to be closed in all children
+	 because of the way bash does pipes; fds_to_close is a
+	 bitmap of all such file descriptors. */
+      if (fds_to_close)
+	close_fd_bitmap (fds_to_close);
 
       do_piping (pipe_in, pipe_out);
 
-      /* Execve expects the command name to be in args[0].  So we
-         leave it there, in the same format that the user used to
-         type it in. */
-      args = make_word_array (words);
-
+      old_interactive = interactive;
       if (async)
-      {
-         old_interactive = interactive;
-     interactive = 0;
-      }
+	interactive = 0;
 
-      subshell_environment = 1;
+      subshell_environment |= SUBSHELL_FORK;	/* XXX - was just = */
 
-      /* This functionality is now provided by close-on-exec of the
-         file descriptors manipulated by redirection and piping.
-         Some file descriptors still need to be closed in all children
-         because of the way bash does pipes; fds_to_close is a
-         bitmap of all such file descriptors. */
-      if (fds_to_close)
-         close_fd_bitmap (fds_to_close);
-
-      if (redirects && (do_redirections (redirects, 1, 0, 0) != 0))
-      {
+      if (redirects && (do_redirections (redirects, RX_ACTIVE) != 0))
+	{
 #if defined (PROCESS_SUBSTITUTION)
-         /* Try to remove named pipes that may have been created as the
-            result of redirections. */
-         unlink_fifo_list ();
+	  /* Try to remove named pipes that may have been created as the
+	     result of redirections. */
+	  unlink_fifo_list ();
 #endif /* PROCESS_SUBSTITUTION */
-
-#ifndef __NT_VC__
-         exit (EXECUTION_FAILURE);
-#else
-         return(EXECUTION_FAILURE);
-#endif
-      }
+	  exit (EXECUTION_FAILURE);
+	}
 
       if (async)
-         interactive = old_interactive;
+	interactive = old_interactive;
 
-      if (!command)
-      {
-         report_error ("%s: command not found", args[0]);
-#ifndef __NT_VC__
-         exit (EX_NOTFOUND);	/* Posix.2 says the exit status is 127 */
-#else
-         return(EX_NOTFOUND);
+      if (command == 0)
+	{
+	  hookf = find_function (NOTFOUND_HOOK);
+	  if (hookf == 0)
+	    {
+	      /* Make sure filenames are displayed using printable characters */
+	      pathname = printable_filename (pathname, 0);
+	      internal_error (_("%s: command not found"), pathname);
+	      exit (EX_NOTFOUND);	/* Posix.2 says the exit status is 127 */
+	    }
+
+#if defined (JOB_CONTROL)
+	  /* May need to reinitialize more of the job control state here. */
+	  kill_current_pipeline ();
 #endif
 
-      }
+	  wl = make_word_list (make_word (NOTFOUND_HOOK), words);
+	  exit (execute_shell_function (hookf, wl));
+	}
 
-#ifndef  __NT_VC__
+      CHECK_SIGTERM;
+
+      /* Execve expects the command name to be in args[0].  So we
+	 leave it there, in the same format that the user used to
+	 type it in. */
+      args = strvec_from_word_list (words, 0, 0, (int *)NULL);
       exit (shell_execve (command, args, export_env));
-#else
-      return(shell_execve (command, args, export_env));
-#endif
     }
   else
-  {
-     /* Make sure that the pipes are closed in the parent. */
-     close_pipes (pipe_in, pipe_out);
+    {
+parent_return:
+      QUIT;
+
+      /* Make sure that the pipes are closed in the parent. */
+      close_pipes (pipe_in, pipe_out);
 #if defined (PROCESS_SUBSTITUTION) && defined (HAVE_DEV_FD)
-     unlink_fifo_list ();
+      if (variable_context == 0)
+        unlink_fifo_list ();
 #endif
-     // FREE (command);
-  }
-  return(0);
+      FREE (command);
+      return (result);
+    }
 }
 
+/* CPP defines to decide whether a particular index into the #! line
+   corresponds to a valid interpreter name or argument character, or
+   whitespace.  The MSDOS define is to allow \r to be treated the same
+   as \n. */
+
+#if !defined (MSDOS)
+#  define STRINGCHAR(ind) \
+    (ind < sample_len && !whitespace (sample[ind]) && sample[ind] != '\n')
+#  define WHITECHAR(ind) \
+    (ind < sample_len && whitespace (sample[ind]))
+#else	/* MSDOS */
+#  define STRINGCHAR(ind) \
+    (ind < sample_len && !whitespace (sample[ind]) && sample[ind] != '\n' && sample[ind] != '\r')
+#  define WHITECHAR(ind) \
+    (ind < sample_len && whitespace (sample[ind]))
+#endif	/* MSDOS */
+
+static char *
+getinterp (sample, sample_len, endp)
+     char *sample;
+     int sample_len, *endp;
+{
+  register int i;
+  char *execname;
+  int start;
+
+  /* Find the name of the interpreter to exec. */
+  for (i = 2; i < sample_len && whitespace (sample[i]); i++)
+    ;
+
+  for (start = i; STRINGCHAR(i); i++)
+    ;
+
+  execname = substring (sample, start, i);
+
+  if (endp)
+    *endp = i;
+  return execname;
+}
+
+#if !defined (HAVE_HASH_BANG_EXEC)
 /* If the operating system on which we're running does not handle
    the #! executable format, then help out.  SAMPLE is the text read
    from the file, SAMPLE_LEN characters.  COMMAND is the name of
@@ -2712,329 +5318,331 @@ execute_disk_command (words, redirects, command_line, pipe_in, pipe_out,
    A single argument to the interpreter is allowed. */
 
 static int
-execute_shell_script_async (sample, sample_len, command, args, env, asynchronous)
-     unsigned char *sample;
+execute_shell_script (sample, sample_len, command, args, env)
+     char *sample;
      int sample_len;
      char *command;
      char **args, **env;
-     int asynchronous;
 {
-  register int i;
   char *execname, *firstarg;
-  int start, size_increment, larry;
-  char **args_new = NULL;
-
-  /* fprintf(stderr, "execute_shell_script Sample %s, command %s\n", sample, command); fflush(stderr); */
+  int i, start, size_increment, larry;
 
   /* Find the name of the interpreter to exec. */
-  for (i = 2; whitespace (sample[i]) && i < sample_len; i++)
-    ;
-
-  for (start = i;
-       !whitespace (sample[i]) && sample[i] != '\n' && i < sample_len;
-       i++)
-    ;
-
-  execname = xmalloc (1 + (i - start));
-  strncpy (execname, (char *) (sample + start), i - start);
-  execname[i - start] = '\0';
+  execname = getinterp (sample, sample_len, &i);
   size_increment = 1;
 
   /* Now the argument, if any. */
-  firstarg = (char *)NULL;
-  for (start = i;
-       whitespace (sample[i]) && sample[i] != '\n' && i < sample_len;
-       i++)
+  for (firstarg = (char *)NULL, start = i; WHITECHAR(i); i++)
     ;
 
   /* If there is more text on the line, then it is an argument for the
      interpreter. */
-  if (i < sample_len && sample[i] != '\n' && !whitespace (sample[i]))
-    {
-      for (start = i;
-      !whitespace (sample[i]) && sample[i] != '\n' && i < sample_len;
-      i++)
-   ;
-      firstarg = xmalloc (1 + (i - start));
-      strncpy (firstarg, (char *)(sample + start), i - start);
-      firstarg[i - start] = '\0';
 
+  if (STRINGCHAR(i))  
+    {
+      for (start = i; STRINGCHAR(i); i++)
+	;
+      firstarg = substring ((char *)sample, start, i);
       size_increment = 2;
     }
 
-  larry = array_len (args) + size_increment;
-
-  /* args = (char **)xrealloc ((char *)args, (1 + larry) * sizeof (char *)); */
-  args_new = (char **) xmalloc((1+ larry) * sizeof(char*));
-  memset(args_new, '\0', (1+ larry) * sizeof(char*));
+  larry = strvec_len (args) + size_increment;
+  args = strvec_resize (args, larry + 1);
 
   for (i = larry - 1; i; i--)
-    args_new[i] = args[i - size_increment];
+    args[i] = args[i - size_increment];
 
-  args_new[0] = execname;
+  args[0] = execname;
   if (firstarg)
     {
-      args_new[1] = firstarg;
-      args_new[2] = command;
+      args[1] = firstarg;
+      args[2] = command;
     }
   else
-    args_new[1] = command;
+    args[1] = command;
 
-  args_new[larry] = (char *)NULL;
+  args[larry] = (char *)NULL;
 
-   /* CENIT modification:
-    *
-    * Try to extract the interpreter name without path and try to execute this.
-    *
-    * This will make "#!/bin/perl" work on windows systems
-    * even if no file /bin/perl exists (as long as perl is in the path).
-    *
-    * ORIGINAL CODE:
-    * return (shell_execve (execname, args, env));
-    */
-   {
-      char *new_execname = NULL;
-
-      new_execname = find_interp_in_path(execname);
-
-      if (NULL != new_execname)
-      {
-         int rc;
-         char *args_sav = args_new[0];
-         /*
-          *  try with executable from path
-          */
-         args_new[0] = new_execname;
-
-         rc = shell_execve_async(new_execname, args_new, env,asynchronous );
-         // rc = nt_execute_shell_script(new_execname, args_new, env, asynchronous);
-         args_new[0] = args_sav;
-         free(args_new);
-         return(rc);
-      }
-
-      /* no such executable found in path
-       * => use old code (with error message)
-       */
-       // fprintf(stderr, "execute_shell_script execname: %s\n", execname); fflush(stderr);
-      {
-         int rc;
-         rc = shell_execve_async(execname, args_new, env, asynchronous);
-         // rc = nt_execute_shell_script(execname, args_new, env, asynchronous);
-         free(args_new);
-         return(rc);
-      }
-   }
-
-   if (NULL != args_new) free(args_new);
-   /* original code: return (shell_execve (execname, args, env)); */
-   return(nt_execute_shell_script(command, args, env, asynchronous));
+  return (shell_execve (execname, args, env));
 }
+#undef STRINGCHAR
+#undef WHITECHAR
 
-static int
-execute_shell_script (sample, sample_len, command, args, env)
-     unsigned char *sample;
-     int sample_len;
-     char *command;
-     char **args, **env;
+#endif /* !HAVE_HASH_BANG_EXEC */
+
+static void
+initialize_subshell ()
 {
-
-   return(execute_shell_script_async (sample, sample_len, command, args, env, 0));
-}
-
-/* Call execve (), handling interpreting shell scripts, and handling
-   exec failures. */
-int
-shell_execve_async (command, args, env, asynchronous)
-     char *command;
-     char **args, **env;
-     int asynchronous;
-{
-   char **args_new = NULL;
-
-   /*fprintf(stderr, "shell_execve command %s\n", command); fflush(stderr); */
-#if defined (isc386) && defined (_POSIX_SOURCE)
-  __setostype (0);		/* Turn on USGr3 semantics. */
-  execve (command, args, env);
-  __setostype (1);		/* Turn the POSIX semantics back on. */
-#else
-#ifndef __NT_VC__ /* exec already done as spawn with error return */
-  execve (command, args, env);
-#else
-
-  {
-     int iRc = 0;
-
-     iRc = execve_nt(command, args, env, asynchronous);
-
-     if (-1 != iRc)
-     {
-        return(iRc);
-     }
-  }
-
-  /* fprintf(stderr, "shell_execve  command %s --- %d\n", command, __LINE__); fflush(stderr); */
-#endif
-#endif /* !(isc386 && _POSIX_SOURCE) */
-
-  /* If we get to this point, then start checking out the file.
-     Maybe it is something we can hack ourselves. */
-  {
-    struct stat finfo;
-
-    int statrc = stat (command, &finfo);
-
-    if ((statrc == 0) &&
-        (S_ISDIR (finfo.st_mode)))
-    {
-       report_error ("%s: is a directory", args[0]);
-       return(EX_NOEXEC);
-    }
-
-
-    if (-1 == statrc)
-    {
-       file_error (command);
-       return (EX_NOEXEC);	/* XXX Posix.2 says that exit status is 126 */
-    }
-    else
-    {
-       /* This file is executable.
-            If it begins with #!, then help out people with losing operating
-            systems.  Otherwise, check to see if it is a binary file by seeing
-            if the first line (or up to 30 characters) are in the ASCII set.
-            Execute the contents as shell commands. */
-
-       int larray = array_len (args) + 1;
-       int i, should_exec = 0;
-       int fd = OPEN (command, O_RDONLY);
-
-       /*fprintf(stderr, "shell_execve  command %s --- %d\n", command, __LINE__); fflush(stderr);*/
-
-       if (fd != -1)
-       {
-          unsigned char sample[80];
-          int sample_len = READ (fd, &sample[0], 80);
-
-          close (fd);
-
-          if (sample_len == 0)
-          {
-             /* fprintf(stderr, "shell_execve  command %s --- %d\n", command, __LINE__); fflush(stderr); */
-             return (EXECUTION_SUCCESS);
-          }
-
-          /* Is this supposed to be an executable script?
-             If so, the format of the line is "#! interpreter [argument]".
-             A single argument is allowed.  The BSD kernel restricts
-             the length of the entire line to 32 characters (32 bytes
-             being the size of the BSD exec header), but we allow 80
-             characters. */
-
-          if (sample_len > 0 && sample[0] == '#' && sample[1] == '!')
-          {
-             // return (nt_execute_shell_script(command, args, env, asynchronous));
-            return (execute_shell_script_async
-                      (sample, sample_len, command, args, env,asynchronous ));
-          }
-          else if ((sample_len != -1) &&
-                   check_binary_file (sample, sample_len))
-          {
-             /* fprintf(stderr, "shell_execve  command %s --- %d\n", command, __LINE__); fflush(stderr); */
-             report_error ("%s: cannot execute binary file", command);
-             return (EX_BINARY_FILE);
-          }
-       }
-
-       report_error ("%s: cannot execute file", command);
-       return (EX_NOEXEC);
-
-       /* try as shell script */
-       return (nt_execute_shell_script(command, args, env, asynchronous));
-
-#if defined (JOB_CONTROL)
-         /* Forget about the way that job control was working. We are
-            in a subshell. */
-         without_job_control ();
-#endif /* JOB_CONTROL */
 #if defined (ALIAS)
-         /* Forget about any aliases that we knew of.  We are in a subshell. */
-         delete_all_aliases ();
+  /* Forget about any aliases that we knew of.  We are in a subshell. */
+  delete_all_aliases ();
 #endif /* ALIAS */
 
+#if defined (HISTORY)
+  /* Forget about the history lines we have read.  This is a non-interactive
+     subshell. */
+  history_lines_this_session = 0;
+#endif
+
+  /* Forget about the way job control was working. We are in a subshell. */
+  without_job_control ();
+
 #if defined (JOB_CONTROL)
-         set_sigchld_handler ();
+  set_sigchld_handler ();
+  init_job_stats ();
 #endif /* JOB_CONTROL */
-         set_sigint_handler ();
 
-         /* Insert the name of this shell into the argument list. */
+  /* Reset the values of the shell flags and options. */
+  reset_shell_flags ();
+  reset_shell_options ();
+  reset_shopt_options ();
 
-         /* args = (char **)xrealloc ((char *)args, (1 + larray) * sizeof (char *)); */
-         args_new = (char **) xmalloc((1+ larray) * sizeof(char*));
-         memset(args_new, '\0', (1+ larray) * sizeof(char*));
+  /* Zero out builtin_env, since this could be a shell script run from a
+     sourced file with a temporary environment supplied to the `source/.'
+     builtin.  Such variables are not supposed to be exported (empirical
+     testing with sh and ksh).  Just throw it away; don't worry about a
+     memory leak. */
+  if (vc_isbltnenv (shell_variables))
+    shell_variables = shell_variables->down;
 
-         for (i = larray - 1; i; i--)
-            args_new[i] = args[i - 1];
+  clear_unwind_protect_list (0);
+  /* XXX -- are there other things we should be resetting here? */
+  parse_and_execute_level = 0;		/* nothing left to restore it */
 
-         args_new[0] = shell_name;
-         args_new[1] = command;
-         args_new[larray] = (char *)NULL;
+  /* We're no longer inside a shell function. */
+  variable_context = return_catch_flag = funcnest = evalnest = sourcenest = 0;
 
-         if (args_new[0][0] == '-')
-            args_new[0]++;
+  executing_list = 0;		/* XXX */
 
-         if (should_exec)
-         {
-            struct stat finfo;
-
-#if defined (isc386) && defined (_POSIX_SOURCE)
-            __setostype (0);	/* Turn on USGr3 semantics. */
-            execve (shell_name, args_new, env);
-            __setostype (1);	/* Turn the POSIX semantics back on. */
-#else
-            execve (shell_name, args_new, env);
-#endif /* isc386 && _POSIX_SOURCE */
-
-       /* Oh, no!  We couldn't even exec this! */
-            if ((stat (args_new[0], &finfo) == 0) && (S_ISDIR (finfo.st_mode)))
-               report_error ("%s: is a directory", args[0]);
-            else
-               file_error (args[0]);
-
-            if (NULL != args_new)
-            {
-               free(args_new);
-            }
-            return (EXECUTION_FAILURE);
-         }
-         else
-         {
-            subshell_argc = larray;
-            subshell_argv = args;
-            subshell_envp = env;
-            LONGJMP (subshell_top_level, 1);
-         }
-      }
-  }
-  if (NULL != args_new)
-  {
-     free(args_new);
-  }
-
-  /* fprintf(stderr, "shell_execve  command %s --- %d\n", command, __LINE__); fflush(stderr); */
-  return(0);
+  /* If we're not interactive, close the file descriptor from which we're
+     reading the current shell script. */
+  if (interactive_shell == 0)
+    unset_bash_input (0);
 }
 
+#if defined (HAVE_SETOSTYPE) && defined (_POSIX_SOURCE)
+#  define SETOSTYPE(x)	__setostype(x)
+#else
+#  define SETOSTYPE(x)
+#endif
+
+#define HASH_BANG_BUFSIZ	128
+
+#define READ_SAMPLE_BUF(file, buf, len) \
+  do \
+    { \
+      fd = open(file, O_RDONLY); \
+      if (fd >= 0) \
+	{ \
+	  len = read (fd, buf, HASH_BANG_BUFSIZ); \
+	  close (fd); \
+	} \
+      else \
+	len = -1; \
+    } \
+  while (0)
+      
+/* Call execve (), handling interpreting shell scripts, and handling
+   exec failures. */
 int
 shell_execve (command, args, env)
      char *command;
      char **args, **env;
 {
-   return(shell_execve_async(command, args, env, 0));
-}
+  int larray, i, fd;
+  char sample[HASH_BANG_BUFSIZ];
+  int sample_len;
+
+  SETOSTYPE (0);		/* Some systems use for USG/POSIX semantics */
+  execve (command, args, env);
+  i = errno;			/* error from execve() */
+  CHECK_TERMSIG;
+  SETOSTYPE (1);
+
+  /* If we get to this point, then start checking out the file.
+     Maybe it is something we can hack ourselves. */
+  if (i != ENOEXEC)
+    {
+      /* make sure this is set correctly for file_error/report_error */
+      last_command_exit_value = (i == ENOENT) ?  EX_NOTFOUND : EX_NOEXEC; /* XXX Posix.2 says that exit status is 126 */
+      if (file_isdir (command))
+#if defined (EISDIR)
+	internal_error (_("%s: %s"), command, strerror (EISDIR));
+#else
+	internal_error (_("%s: is a directory"), command);
+#endif
+      else if (executable_file (command) == 0)
+	{
+	  errno = i;
+	  file_error (command);
+	}
+      /* errors not involving the path argument to execve. */
+      else if (i == E2BIG || i == ENOMEM)
+	{
+	  errno = i;
+	  file_error (command);
+	}
+      else
+	{
+	  /* The file has the execute bits set, but the kernel refuses to
+	     run it for some reason.  See why. */
+#if defined (HAVE_HASH_BANG_EXEC)
+	  READ_SAMPLE_BUF (command, sample, sample_len);
+	  if (sample_len > 0)
+	    sample[sample_len - 1] = '\0';
+	  if (sample_len > 2 && sample[0] == '#' && sample[1] == '!')
+	    {
+	      char *interp;
+	      int ilen;
+
+	      interp = getinterp (sample, sample_len, (int *)NULL);
+	      ilen = strlen (interp);
+	      errno = i;
+	      if (interp[ilen - 1] == '\r')
+		{
+		  interp = xrealloc (interp, ilen + 2);
+		  interp[ilen - 1] = '^';
+		  interp[ilen] = 'M';
+		  interp[ilen + 1] = '\0';
+		}
+	      sys_error (_("%s: %s: bad interpreter"), command, interp ? interp : "");
+	      FREE (interp);
+	      return (EX_NOEXEC);
+	    }
+#endif
+	  errno = i;
+	  file_error (command);
+	}
+      return (last_command_exit_value);
+    }
+
+  /* This file is executable.
+     If it begins with #!, then help out people with losing operating
+     systems.  Otherwise, check to see if it is a binary file by seeing
+     if the contents of the first line (or up to 80 characters) are in the
+     ASCII set.  If it's a text file, execute the contents as shell commands,
+     otherwise return 126 (EX_BINARY_FILE). */
+  READ_SAMPLE_BUF (command, sample, sample_len);
+
+  if (sample_len == 0)
+    return (EXECUTION_SUCCESS);
+
+  /* Is this supposed to be an executable script?
+     If so, the format of the line is "#! interpreter [argument]".
+     A single argument is allowed.  The BSD kernel restricts
+     the length of the entire line to 32 characters (32 bytes
+     being the size of the BSD exec header), but we allow 80
+     characters. */
+  if (sample_len > 0)
+    {
+#if !defined (HAVE_HASH_BANG_EXEC)
+      if (sample_len > 2 && sample[0] == '#' && sample[1] == '!')
+	return (execute_shell_script (sample, sample_len, command, args, env));
+      else
+#endif
+      if (check_binary_file (sample, sample_len))
+	{
+	  internal_error (_("%s: cannot execute binary file: %s"), command, strerror (i));
+	  errno = i;
+	  return (EX_BINARY_FILE);
+	}
+    }
+
+  /* We have committed to attempting to execute the contents of this file
+     as shell commands. */
+
+  reset_parser ();
+  initialize_subshell ();
+
+  set_sigint_handler ();
+
+  /* Insert the name of this shell into the argument list. */
+  larray = strvec_len (args) + 1;
+  args = strvec_resize (args, larray + 1);
+
+  for (i = larray - 1; i; i--)
+    args[i] = args[i - 1];
+
+  args[0] = shell_name;
+  args[1] = command;
+  args[larray] = (char *)NULL;
+
+  if (args[0][0] == '-')
+    args[0]++;
+
+#if defined (RESTRICTED_SHELL)
+  if (restricted)
+    change_flag ('r', FLAG_OFF);
+#endif
+
+  if (subshell_argv)
+    {
+      /* Can't free subshell_argv[0]; that is shell_name. */
+      for (i = 1; i < subshell_argc; i++)
+	free (subshell_argv[i]);
+      free (subshell_argv);
+    }
+
+  dispose_command (currently_executing_command);	/* XXX */
+  currently_executing_command = (COMMAND *)NULL;
+
+  subshell_argc = larray;
+  subshell_argv = args;
+  subshell_envp = env;
+
+  unbind_args ();	/* remove the positional parameters */
 
 #if defined (PROCESS_SUBSTITUTION)
-/* Currently unused */
+  clear_fifo_list ();	/* pipe fds are what they are now */
+#endif
+
+  sh_longjmp (subshell_top_level, 1);
+  /*NOTREACHED*/
+}
+
+static int
+execute_intern_function (name, funcdef)
+     WORD_DESC *name;
+     FUNCTION_DEF *funcdef;
+{
+  SHELL_VAR *var;
+
+  if (check_identifier (name, posixly_correct) == 0)
+    {
+      if (posixly_correct && interactive_shell == 0)
+	{
+	  last_command_exit_value = EX_BADUSAGE;
+	  jump_to_top_level (ERREXIT);
+	}
+      return (EXECUTION_FAILURE);
+    }
+
+  /* Posix interpretation 383 */
+  if (posixly_correct && find_special_builtin (name->word))
+    {
+      internal_error (_("`%s': is a special builtin"), name->word);
+      last_command_exit_value = EX_BADUSAGE;
+      jump_to_top_level (interactive_shell ? DISCARD : ERREXIT);
+    }
+
+  var = find_function (name->word);
+  if (var && (readonly_p (var) || noassign_p (var)))
+    {
+      if (readonly_p (var))
+	internal_error (_("%s: readonly function"), var->name);
+      return (EXECUTION_FAILURE);
+    }
+
+#if defined (DEBUGGER)
+  bind_function_def (name->word, funcdef);
+#endif
+
+  bind_function (name->word, funcdef->command);
+  return (EXECUTION_SUCCESS);
+}
+
+#if defined (INCLUDE_UNUSED)
+#if defined (PROCESS_SUBSTITUTION)
 void
 close_all_files ()
 {
@@ -3042,12 +5650,13 @@ close_all_files ()
 
   fd_table_size = getdtablesize ();
   if (fd_table_size > 256)	/* clamp to a reasonable value */
-     fd_table_size = 256;
+    fd_table_size = 256;
 
   for (i = 3; i < fd_table_size; i++)
     close (i);
 }
 #endif /* PROCESS_SUBSTITUTION */
+#endif
 
 static void
 close_pipes (in, out)
@@ -3059,1243 +5668,49 @@ close_pipes (in, out)
     close (out);
 }
 
+static void
+dup_error (oldd, newd)
+     int oldd, newd;
+{
+  sys_error (_("cannot duplicate fd %d to fd %d"), oldd, newd);
+}
+
 /* Redirect input and output to be from and to the specified pipes.
    NO_PIPE and REDIRECT_BOTH are handled correctly. */
-#ifndef __NT_VC__
-static
-#endif
-void
+static void
 do_piping (pipe_in, pipe_out)
      int pipe_in, pipe_out;
 {
   if (pipe_in != NO_PIPE)
     {
       if (dup2 (pipe_in, 0) < 0)
-         internal_error ("cannot duplicate fd %d to fd 0: %s",
-                         pipe_in, strerror (errno));
+	dup_error (pipe_in, 0);
       if (pipe_in > 0)
-         close (pipe_in);
+	close (pipe_in);
+#ifdef __CYGWIN__
+      /* Let stdio know the fd may have changed from text to binary mode. */
+      freopen (NULL, "r", stdin);
+#endif /* __CYGWIN__ */
     }
-
   if (pipe_out != NO_PIPE)
-  {
-     if (pipe_out != REDIRECT_BOTH)
-     {
-        fflush(stdout);
-        if (dup2 (pipe_out, 1) < 0)
-           internal_error ("cannot duplicate fd %d to fd 1: %s",
-                           pipe_out, strerror (errno));
-        if (pipe_out == 0 || pipe_out > 1)
-           close (pipe_out);
-     }
-     else
-     {
-        fflush(stderr);
-        dup2 (1, 2);
-     }
-  }
-}
-
-#define AMBIGUOUS_REDIRECT  -1
-#define NOCLOBBER_REDIRECT  -2
-#define RESTRICTED_REDIRECT -3	/* Only can happen in restricted shells. */
-
-/* Perform the redirections on LIST.  If FOR_REAL, then actually make
-   input and output file descriptors, otherwise just do whatever is
-   neccessary for side effecting.  INTERNAL says to remember how to
-   undo the redirections later, if non-zero.  If SET_CLEXEC is non-zero,
-   file descriptors opened in do_redirection () have their close-on-exec
-   flag set. */
-#ifndef __NT_VC__
-static
-#endif
-int
-do_redirections2 (list, for_real, internal, set_clexec, bypass_buf_dup)
-     REDIRECT *list;
-     int for_real, internal, set_clexec, bypass_buf_dup;
-{
-  register int error;
-  register REDIRECT *temp = list;
-
-  if (internal)
-  {
-     if (redirection_undo_list)
-     {
-        dispose_redirects (redirection_undo_list);
-        redirection_undo_list = (REDIRECT *)NULL;
-     }
-     if (exec_redirection_undo_list)
-        dispose_exec_redirects ();
-  }
-
-  while (temp)
-  {
-     error = do_redirection_internal2(temp, for_real, internal, set_clexec, bypass_buf_dup);
-
-     if (error)
-     {
-        char *filename;
-
-        if (expandable_redirection_filename (temp))
-        {
-           if (posixly_correct && !interactive_shell)
-              disallow_filename_globbing++;
-           filename = redirection_expand (temp->redirectee.filename);
-           if (posixly_correct && !interactive_shell)
-              disallow_filename_globbing--;
-
-           if (!filename)
-              filename = savestring ("");
-        }
-        else
-           filename = itos (temp->redirectee.dest);
-
-        switch (error)
-        {
-           case AMBIGUOUS_REDIRECT:
-              report_error ("%s: Ambiguous redirect", filename);
-              break;
-
-           case NOCLOBBER_REDIRECT:
-              report_error ("%s: Cannot clobber existing file", filename);
-              break;
-
-#if defined (RESTRICTED_SHELL)
-       case RESTRICTED_REDIRECT:
-          report_error ("%s: output redirection restricted", filename);
-          break;
-#endif /* RESTRICTED_SHELL */
-
-           default:
-              report_error ("%s: %s", filename, strerror (error));
-              break;
-        }
-
-        free (filename);
-        return (error);
-     }
-
-     temp = temp->next;
-  }
-  return (0);
-}
-int
-do_redirections (list, for_real, internal, set_clexec)
-     REDIRECT *list;
-     int for_real, internal, set_clexec;
-{
-   return(do_redirections2(list, for_real, internal, set_clexec,0));
-}
-
-/* Return non-zero if the redirection pointed to by REDIRECT has a
-   redirectee.filename that can be expanded. */
-static int
-expandable_redirection_filename (redirect)
-     REDIRECT *redirect;
-{
-  int result;
-
-  switch (redirect->instruction)
     {
-    case r_output_direction:
-    case r_appending_to:
-    case r_input_direction:
-    case r_inputa_direction:
-    case r_err_and_out:
-    case r_input_output:
-    case r_output_force:
-    case r_duplicating_input_word:
-    case r_duplicating_output_word:
-      result = 1;
-      break;
-
-    default:
-      result = 0;
-    }
-  return (result);
-}
-
-/* Expand the word in WORD returning a string.  If WORD expands to
-   multiple words (or no words), then return NULL. */
-char *
-redirection_expand (word)
-     WORD_DESC *word;
-{
-  char *result;
-  WORD_LIST *tlist1, *tlist2;
-  static char *pcNTDevNull = "NUL";
-
-  tlist1 = make_word_list (copy_word (word), (WORD_LIST *)NULL);
-  tlist2 = expand_words_no_vars (tlist1);
-  dispose_words (tlist1);
-
-  if (!tlist2 || tlist2->next)
-    {
-      /* We expanded to no words, or to more than a single word.
-    Dispose of the word list and return NULL. */
-      if (tlist2)
-   dispose_words (tlist2);
-      return ((char *)NULL);
-    }
-  result = string_list (tlist2);
-  dispose_words (tlist2);
-
-  if (0 == strcmp("/dev/null", result))
-  {
-     free(result);
-     return(strdup(pcNTDevNull));
-  }
-
-  return (result);
-}
-
-static int
-do_redirection_internal2 (redirect, for_real, remembering, set_clexec, bypass_buf_dup)
-     REDIRECT *redirect;
-     int for_real, remembering, set_clexec, bypass_buf_dup;
-{
-   WORD_DESC *redirectee = redirect->redirectee.filename;
-   int redir_fd = redirect->redirectee.dest;
-   int fd = -1;
-   int redirector = redirect->redirector;
-   char *redirectee_word = NULL;
-   enum r_instruction ri = redirect->instruction;
-   REDIRECT *new_redirect;
-
-   fflush(stdout);
-   fflush(stderr);
-
-   if (ri == r_duplicating_input_word || ri == r_duplicating_output_word)
-   {
-      /* We have [N]>&WORD or [N]<&WORD.  Expand WORD, then translate
-         the redirection into a new one and continue. */
-      redirectee_word = redirection_expand (redirectee);
-
-      if (redirectee_word[0] == '-' && redirectee_word[1] == '\0')
-      {
-         rd.dest = 0L;
-         new_redirect = make_redirection (redirector, r_close_this, rd);
-      }
-      else if (all_digits (redirectee_word))
-      {
-         if (ri == r_duplicating_input_word)
-         {
-            rd.dest = atol (redirectee_word);
-            new_redirect = make_redirection (redirector, r_duplicating_input, rd);
-         }
-         else
-         {
-            rd.dest = atol (redirectee_word);
-            new_redirect = make_redirection (redirector, r_duplicating_output, rd);
-         }
-      }
-      else if (ri == r_duplicating_output_word && redirector == 1)
-      {
-         if (!posixly_correct)
-         {
-            rd.filename = make_word (redirectee_word);
-            new_redirect = make_redirection (1, r_err_and_out, rd);
-         }
-         else
-            new_redirect = copy_redirect (redirect);
-      }
+      if (pipe_out != REDIRECT_BOTH)
+	{
+	  if (dup2 (pipe_out, 1) < 0)
+	    dup_error (pipe_out, 1);
+	  if (pipe_out == 0 || pipe_out > 1)
+	    close (pipe_out);
+	}
       else
-      {
-         free (redirectee_word);
-         return (AMBIGUOUS_REDIRECT);
-      }
-
-      free (redirectee_word);
-
-      /* Set up the variables needed by the rest of the function from the
-         new redirection. */
-      if (new_redirect->instruction == r_err_and_out)
-      {
-         char *alloca_hack;
-
-         /* Copy the word without allocating any memory that must be
-            explicitly freed. */
-         redirectee = (WORD_DESC *)alloca (sizeof (WORD_DESC));
-         xbcopy ((char *)new_redirect->redirectee.filename,
-                 (char *)redirectee, sizeof (WORD_DESC));
-
-         alloca_hack = (char *)
-            alloca (1 + strlen (new_redirect->redirectee.filename->word));
-         redirectee->word = alloca_hack;
-         strcpy (redirectee->word, new_redirect->redirectee.filename->word);
-      }
-      else
-         /* It's guaranteed to be an integer, and shouldn't be freed. */
-         redirectee = new_redirect->redirectee.filename;
-
-      redir_fd = new_redirect->redirectee.dest;
-      redirector = new_redirect->redirector;
-      ri = new_redirect->instruction;
-
-      /* Overwrite the flags element of the old redirect with the new value. */
-      redirect->flags = new_redirect->flags;
-      dispose_redirects (new_redirect);
-   }
-
-   switch (ri)
-   {
-      case r_output_direction:
-      case r_appending_to:
-      case r_input_direction:
-      case r_inputa_direction:
-      case r_err_and_out:		/* command &>filename */
-      case r_input_output:
-      case r_output_force:
-
-         if (posixly_correct && !interactive_shell)
-            disallow_filename_globbing++;
-         redirectee_word = redirection_expand (redirectee);
-         if (posixly_correct && !interactive_shell)
-            disallow_filename_globbing--;
-
-         if (!redirectee_word)
-            return (AMBIGUOUS_REDIRECT);
-
-#if defined (RESTRICTED_SHELL)
-         if (restricted && (ri == r_output_direction ||
-                            ri == r_input_output ||
-                            ri == r_err_and_out ||
-                            ri == r_appending_to ||
-                            ri == r_output_force))
-         {
-            free (redirectee_word);
-            return (RESTRICTED_REDIRECT);
-         }
-#endif /* RESTRICTED_SHELL */
-
-         /* If we are in noclobber mode, you are not allowed to overwrite
-            existing files.  Check first. */
-         if (noclobber && (ri == r_output_direction ||
-                           ri == r_input_output ||
-                           ri == r_err_and_out))
-         {
-            struct stat finfo;
-            int stat_result;
-
-            stat_result = stat (redirectee_word, &finfo);
-
-            if ((stat_result == 0) && (S_ISREG (finfo.st_mode)))
-            {
-               free (redirectee_word);
-               return (NOCLOBBER_REDIRECT);
-            }
-
-            /* If the file was not present, make sure we open it exclusively
-               so that if it is created before we open it, our open will fail. */
-            if (stat_result != 0)
-               redirect->flags |= O_EXCL;
-
-            fd = OPEN3 (redirectee_word, redirect->flags, 0666);
-
-            if ((fd < 0) && (errno == EEXIST))
-            {
-               free (redirectee_word);
-               return (NOCLOBBER_REDIRECT);
-            }
-         }
-         else
-         {
-            fd = OPEN3 (redirectee_word, redirect->flags, 0666);
-#if defined (AFS_CREATE_BUG)
-            if ((fd < 0) && (errno == EACCES))
-               fd = OPEN3 (redirectee_word, (redirect->flags & ~O_CREAT), 0666);
-#endif /* AFS_CREATE_BUG */
-         }
-         free (redirectee_word);
-
-         if (fd < 0)
-            return (errno);
-
-         if (for_real)
-         {
-            if (remembering)
-               /* Only setup to undo it if the thing to undo is active. */
-               /* if ((fd != redirector) && (fcntl (redirector, F_GETFD, 0) != -1)) */
-               if ((fd != redirector) && IS_OPEN_FD(redirector))
-                  add_undo_redirect (redirector);
-               else
-                  add_undo_close_redirect (redirector);
-
-#if defined (BUFFERED_INPUT)
-            check_bash_input (redirector);
-#endif
-
-            if (fd != redirector)
-            {
-               if (dup2 (fd, redirector) < 0)
-               {
-                  return (errno);
-               }
-            }
-
-#if defined (BUFFERED_INPUT)
-            /* Do not change the buffered stream for an implicit redirection
-               of /dev/null to fd 0 for asynchronous commands without job
-               control (r_inputa_direction). */
-            if (ri == r_input_direction || ri == r_input_output)
-            {
-
-               if (!bypass_buf_dup) duplicate_buffered_stream (fd, redirector);
-            }
-#endif /* BUFFERED_INPUT */
-
-            /*
-             * If we're remembering, then this is the result of a while, for
-             * or until loop with a loop redirection, or a function/builtin
-             * executing in the parent shell with a redirection.  In the
-             * function/builtin case, we want to set all file descriptors > 2
-             * to be close-on-exec to duplicate the effect of the old
-             * for i = 3 to NOFILE close(i) loop.  In the case of the loops,
-             * both sh and ksh leave the file descriptors open across execs.
-             * The Posix standard mentions only the exec builtin.
-             */
-            if (set_clexec && (redirector > 2))
-               SET_CLOSE_ON_EXEC (redirector);
-         }
-
-         if (fd != redirector)
-         {
-#if defined (BUFFERED_INPUT)
-            if (ri == r_input_direction || ri == r_inputa_direction ||
-                ri == r_input_output)
-               close_buffered_fd (fd);
-            else
-#endif /* !BUFFERED_INPUT */
-               close (fd);		/* Don't close what we just opened! */
-         }
-
-         /* If we are hacking both stdout and stderr, do the stderr
-            redirection here. */
-         if (ri == r_err_and_out)
-         {
-            if (for_real)
-            {
-               if (remembering)
-                  add_undo_redirect (2);
-
-               if (dup2 (1, 2) < 0)
-                  return (errno);
-            }
-         }
-         break;
-
-      case r_reading_until:
-      case r_deblank_reading_until:
-
-         /* REDIRECTEE is a pointer to a WORD_DESC containing the text of
-            the new input.  Place it in a temporary file. */
-         if (redirectee)
-         {
-            char filename[40];
-            pid_t pid = getpid ();
-
-            /* Make the filename for the temp file. */
-            sprintf (filename, "/tmp/t%d-sh", pid);
-
-            fd = OPEN3 (filename, O_TRUNC | O_WRONLY | O_CREAT, 0666);
-            if (fd < 0)
-               return (errno);
-
-            errno = 0;		/* XXX */
-            if (redirectee->word)
-            {
-               char *document;
-               int document_len;
-
-               /* Expand the text if the word that was specified had
-                  no quoting.  The text that we expand is treated
-                  exactly as if it were surrounded by double quotes. */
-
-               if (redirectee->quoted)
-               {
-                  document = redirectee->word;
-                  document_len = strlen (document);
-                  /* Set errno to something reasonable if the write fails. */
-                  if (write (fd, document, document_len) < document_len)
-                  {
-                     if (errno == 0)
-                        errno = ENOSPC;
-                     close (fd);
-                     return (errno);
-                  }
-               }
-               else
-               {
-                  WORD_LIST *tlist;
-                  tlist = expand_string (redirectee->word, Q_HERE_DOCUMENT);
-                  if (tlist)
-                  {
-                     int fd2;
-                     FILE *fp;
-                     register WORD_LIST *t;
-
-                     /* Try using buffered I/O (stdio) and writing a word
-                        at a time, letting stdio do the work of buffering
-                        for us rather than managing our own strings.  Most
-                        stdios are not particularly fast, however -- this
-                        may need to be reconsidered later. */
-                     if ((fd2 = dup (fd)) < 0 ||
-                         (fp = FDOPEN (fd2, "w")) == NULL)
-                     {
-                        if (fd2 >= 0)
-                        {
-                           CLOSE (fd2);
-                        }
-                        CLOSE (fd);
-                        return (errno);
-                     }
-                     errno = 0;	/* XXX */
-                     for (t = tlist; t; t = t->next)
-                     {
-                        /* This is essentially the body of
-                           string_list_internal expanded inline. */
-                        document = t->word->word;
-                        document_len = strlen (document);
-                        if (t != tlist)
-                           putc (' ', fp);	/* separator */
-                        fwrite (document, document_len, 1, fp);
-                        if (ferror (fp))
-                        {
-                           if (errno == 0)
-                              errno = ENOSPC;
-                           break;
-                        }
-                     }
-                     fclose (fp);
-                     dispose_words (tlist);
-                  }
-               }
-            }
-
-            close (fd);
-            if (errno)
-               return (errno);
-
-            /* Make the document really temporary.  Also make it the input. */
-            fd = OPEN3 (filename, O_RDONLY, 0666);
-
-            if (unlink (filename) < 0 || fd < 0)
-            {
-               if (fd >= 0)
-                  close (fd);
-               return (errno);
-            }
-
-            if (for_real)
-            {
-               if (remembering)
-                  /* Only setup to undo it if the thing to undo is active. */
-                  /* if ((fd != redirector) && (fcntl (redirector, F_GETFD, 0) != -1)) */
-                  if ((fd != redirector) && IS_OPEN_FD(redirector))
-                     add_undo_redirect (redirector);
-                  else
-                     add_undo_close_redirect (redirector);
-
-#if defined (BUFFERED_INPUT)
-               check_bash_input (redirector);
-#endif
-               if (dup2 (fd, redirector) < 0)
-               {
-                  close (fd);
-                  return (errno);
-               }
-
-#if defined (BUFFERED_INPUT)
-               duplicate_buffered_stream (fd, redirector);
-#endif
-
-               if (set_clexec && (redirector > 2))
-                  SET_CLOSE_ON_EXEC (redirector);
-            }
-
-#if defined (BUFFERED_INPUT)
-            close_buffered_fd (fd);
-#else
-            close (fd);
-#endif
-         }
-         break;
-
-      case r_duplicating_input:
-      case r_duplicating_output:
-
-         if (for_real && (redir_fd != redirector))
-         {
-            if (remembering)
-               /* Only setup to undo it if the thing to undo is active. */
-               /* if (fcntl (redirector, F_GETFD, 0) != -1) */
-               if (IS_OPEN_FD(redirector))
-                  add_undo_redirect (redirector);
-               else
-                  add_undo_close_redirect (redirector);
-
-#if defined (BUFFERED_INPUT)
-            check_bash_input (redirector);
-#endif
-            /* This is correct.  2>&1 means dup2 (1, 2); */
-
-            if (dup2 (redir_fd, redirector) < 0)
-               return (errno);
-
-#if defined (BUFFERED_INPUT)
-            if (ri == r_duplicating_input)
-               duplicate_buffered_stream (redir_fd, redirector);
-#endif /* BUFFERED_INPUT */
-
-            /* First duplicate the close-on-exec state of redirectee.  dup2
-               leaves the flag unset on the new descriptor, which means it
-               stays open.  Only set the close-on-exec bit for file descriptors
-               greater than 2 in any case, since 0-2 should always be open
-               unless closed by something like `exec 2<&-'. */
-            /* if ((already_set || set_unconditionally) && (ok_to_set))
-               set_it () */
-#ifndef __NT_VC__
-            if (((fcntl (redir_fd, F_GETFD, 0) == 1) || set_clexec) &&
-                (redirector > 2))
-               SET_CLOSE_ON_EXEC (redirector);
-#endif
-         }
-         break;
-
-      case r_close_this:
-
-         if (for_real)
-         {
-            /* if (remembering && (fcntl (redirector, F_GETFD, 0) != -1)) */
-            if (remembering && IS_OPEN_FD(redirector))
-               add_undo_redirect (redirector);
-
-#if defined (BUFFERED_INPUT)
-            check_bash_input (redirector);
-            close_buffered_fd (redirector);
-#else /* !BUFFERED_INPUT */
-            close (redirector);
-#endif /* !BUFFERED_INPUT */
-         }
-         break;
-   }
-   return (0);
-}
-
-
-/* Do the specific redirection requested.  Returns errno in case of error.
-   If FOR_REAL is zero, then just do whatever is neccessary to produce the
-   appropriate side effects.   REMEMBERING, if non-zero, says to remember
-   how to undo each redirection.  If SET_CLEXEC is non-zero, then
-   we set all file descriptors > 2 that we open to be close-on-exec.  */
-static int
-do_redirection_internal (redirect, for_real, remembering, set_clexec)
-     REDIRECT *redirect;
-     int for_real, remembering, set_clexec;
-{
-   return(do_redirection_internal2(redirect, for_real, remembering, set_clexec, 0));
-}
-
-#define SHELL_FD_BASE	10
-
-/* Remember the file descriptor associated with the slot FD,
-   on REDIRECTION_UNDO_LIST.  Note that the list will be reversed
-   before it is executed.  Any redirections that need to be undone
-   even if REDIRECTION_UNDO_LIST is discarded by the exec builtin
-   are also saved on EXEC_REDIRECTION_UNDO_LIST. */
-static int
-add_undo_redirect (fd)
-     int fd;
-{
-  int new_fd, clexec_flag;
-  REDIRECT *new_redirect, *closer;
-
-/*
-#ifdef HAVE_DUP2
-  new_fd = dup2(fd,SHELL_FD_BASE);
-#else
-  new_fd = fcntl (fd, F_DUPFD, SHELL_FD_BASE);
-#endif
-*/
-  /*new_fd = dup(fd);*/
-  DUP(new_fd, fd);
-
-  if (new_fd < 0)
-    {
-      file_error ("redirection error");
-      return (-1);
+	{
+	  if (dup2 (1, 2) < 0)
+	    dup_error (1, 2);
+	}
+#ifdef __CYGWIN__
+      /* Let stdio know the fd may have changed from text to binary mode, and
+	 make sure to preserve stdout line buffering. */
+      freopen (NULL, "w", stdout);
+      sh_setlinebuf (stdout);
+#endif /* __CYGWIN__ */
     }
-  else
-    {
-      REDIRECT *dummy_redirect;
-
-#ifndef __NT_VC__
-      clexec_flag = fcntl (fd, F_GETFD, 0);
-#else
-     clexec_flag = 1 ;
-#endif
-
-      rd.dest = 0L;
-      closer = make_redirection (new_fd, r_close_this, rd);
-      dummy_redirect = copy_redirects (closer);
-
-      rd.dest = (long)new_fd;
-      new_redirect = make_redirection (fd, r_duplicating_output, rd);
-      new_redirect->next = closer;
-
-      closer->next = redirection_undo_list;
-      redirection_undo_list = new_redirect;
-
-      /* Save redirections that need to be undone even if the undo list
-    is thrown away by the `exec' builtin. */
-      add_exec_redirect (dummy_redirect);
-
-      /* File descriptors used only for saving others should always be
-    marked close-on-exec.  Unfortunately, we have to preserve the
-    close-on-exec state of the file descriptor we are saving, since
-    fcntl (F_DUPFD) sets the new file descriptor to remain open
-    across execs.  If, however, the file descriptor whose state we
-    are saving is <= 2, we can just set the close-on-exec flag,
-    because file descriptors 0-2 should always be open-on-exec,
-    and the restore above in do_redirection() will take care of it. */
-
-      if (clexec_flag || fd < 3)
-         SET_CLOSE_ON_EXEC (new_fd);
-
-    }
-  return (0);
-}
-
-/* Set up to close FD when we are finished with the current command
-   and its redirections. */
-static void
-add_undo_close_redirect (fd)
-     int fd;
-{
-  REDIRECT *closer;
-
-  rd.dest = 0L;
-  closer = make_redirection (fd, r_close_this, rd);
-  closer->next = redirection_undo_list;
-  redirection_undo_list = closer;
-}
-
-static void
-add_exec_redirect (dummy_redirect)
-     REDIRECT *dummy_redirect;
-{
-  dummy_redirect->next = exec_redirection_undo_list;
-  exec_redirection_undo_list = dummy_redirect;
-}
-
-intern_function (name, function)
-     WORD_DESC *name;
-     COMMAND *function;
-{
-  SHELL_VAR *var;
-
-  if (!check_identifier (name, posixly_correct))
-    return (EXECUTION_FAILURE);
-
-  var = find_function (name->word);
-  if (var && readonly_p (var))
-    {
-      report_error ("%s: readonly function", var->name);
-      return (EXECUTION_FAILURE);
-    }
-
-  bind_function (name->word, function);
-  return (EXECUTION_SUCCESS);
-}
-
-#define u_mode_bits(x) (((x) & 0000700) >> 6)
-#define g_mode_bits(x) (((x) & 0000070) >> 3)
-#define o_mode_bits(x) (((x) & 0000007) >> 0)
-#define X_BIT(x) ((x) & 1)
-
-/* Return some flags based on information about this file.
-   The EXISTS bit is non-zero if the file is found.
-   The EXECABLE bit is non-zero the file is executble.
-   Zero is returned if the file is not found. */
-int
-file_status (name)
-     const char *name;
-{
-  struct stat finfo;
-  static int user_id = -1;
-
-  /* Determine whether this file exists or not. */
-  if (stat (name, &finfo) < 0)
-    return (0);
-
-  /* If the file is a directory, then it is not "executable" in the
-     sense of the shell. */
-  if (S_ISDIR (finfo.st_mode))
-    return (FS_EXISTS);
-
-#if defined (AFS)
-  /* We have to use access(2) to determine access because AFS does not
-     support Unix file system semantics.  This may produce wrong
-     answers for non-AFS files when ruid != euid.  I hate AFS. */
-  if (access (name, X_OK))
-    return (FS_EXISTS | FS_EXECABLE);
-  else
-    return (FS_EXISTS);
-#else /* !AFS */
-
-  /* Find out if the file is actually executable.  By definition, the
-     only other criteria is that the file has an execute bit set that
-     we can use. */
-  if (user_id == -1)
-    user_id = current_user.euid;
-
-  /* Root only requires execute permission for any of owner, group or
-     others to be able to exec a file. */
-  if (user_id == 0)
-    {
-      int bits;
-
-      bits = (u_mode_bits (finfo.st_mode) |
-         g_mode_bits (finfo.st_mode) |
-         o_mode_bits (finfo.st_mode));
-
-      if (X_BIT (bits))
-   return (FS_EXISTS | FS_EXECABLE);
-    }
-
-  /* If we are the owner of the file, the owner execute bit applies. */
-  if (user_id == finfo.st_uid && X_BIT (u_mode_bits (finfo.st_mode)))
-    return (FS_EXISTS | FS_EXECABLE);
-
-  /* If we are in the owning group, the group permissions apply. */
-  if (group_member (finfo.st_gid) && X_BIT (g_mode_bits (finfo.st_mode)))
-    return (FS_EXISTS | FS_EXECABLE);
-
-  /* If `others' have execute permission to the file, then so do we,
-     since we are also `others'. */
-  if (X_BIT (o_mode_bits (finfo.st_mode)))
-    return (FS_EXISTS | FS_EXECABLE);
-  else
-    return (FS_EXISTS);
-#endif /* !AFS */
-}
-
-/* Return non-zero if FILE exists and is executable.
-   Note that this function is the definition of what an
-   executable file is; do not change this unless YOU know
-   what an executable file is. */
-int
-executable_file (file)
-     char *file;
-{
-  return (file_status (file) & FS_EXECABLE);
-}
-
-/* DOT_FOUND_IN_SEARCH becomes non-zero when find_user_command ()
-   encounters a `.' as the directory pathname while scanning the
-   list of possible pathnames; i.e., if `.' comes before the directory
-   containing the file of interest. */
-int dot_found_in_search = 0;
-
-/* Locate the executable file referenced by NAME, searching along
-   the contents of the shell PATH variable.  Return a new string
-   which is the full pathname to the file, or NULL if the file
-   couldn't be found.  If a file is found that isn't executable,
-   and that is the only match, then return that. */
-char *
-find_user_command (name)
-     char *name;
-{
-  return (find_user_command_internal (name, FS_EXEC_PREFERRED));
-}
-
-/* Locate the file referenced by NAME, searching along the contents
-   of the shell PATH variable.  Return a new string which is the full
-   pathname to the file, or NULL if the file couldn't be found.  This
-   returns the first file found. */
-char *
-find_path_file (name)
-     char *name;
-{
-  return (find_user_command_internal (name, FS_EXISTS));
-}
-
-static char *
-find_user_command_internal (name, flags)
-     char *name;
-     int flags;
-{
-  char *path_list = (char *)NULL;
-  SHELL_VAR *var;
-
-  /* Search for the value of PATH in both the temporary environment, and
-     in the regular list of variables. */
-  if (var = find_variable_internal ("PATH", 1))
-    path_list = value_cell (var);
-
-  if (!path_list)
-    return (savestring (name));
-
-  return (find_user_command_in_path (name, path_list, flags));
-}
-
-/* Return the next element from PATH_LIST, a colon separated list of
-   paths.  PATH_INDEX_POINTER is the address of an index into PATH_LIST;
-   the index is modified by this function.
-   Return the next element of PATH_LIST or NULL if there are no more. */
-static char *
-get_next_path_element (path_list, path_index_pointer)
-     char *path_list;
-     int *path_index_pointer;
-{
-  char *path;
-
-  path = extract_colon_unit (path_list, path_index_pointer);
-
-  if (!path)
-    return (path);
-
-  if (!*path)
-    {
-      free (path);
-      path = savestring (".");
-    }
-
-  return (path);
-}
-
-char *
-user_command_matches (name, flags, state)
-     char *name;
-     int flags, state;
-{
-  register int i;
-  char *path_list;
-  int  path_index;
-  char *path_element;
-  char *match;
-  static char **match_list = NULL;
-  static int match_list_size = 0;
-  static int match_index = 0;
-
-  if (!state)
-    {
-      /* Create the list of matches. */
-      if (!match_list)
-   {
-     match_list =
-       (char **) xmalloc ((match_list_size = 5) * sizeof(char *));
-
-     for (i = 0; i < match_list_size; i++)
-       match_list[i] = 0;
-   }
-
-      /* Clear out the old match list. */
-      for (i = 0; i < match_list_size; i++)
-   match_list[i] = NULL;
-
-      /* We haven't found any files yet. */
-      match_index = 0;
-
-      path_list = get_string_value ("PATH");
-      path_index = 0;
-
-      while (path_list && path_list[path_index])
-   {
-     path_element = get_next_path_element (path_list, &path_index);
-
-     if (!path_element)
-       break;
-
-     match = find_user_command_in_path (name, path_element, flags);
-
-     free (path_element);
-
-     if (!match)
-       continue;
-
-     if (match_index + 1 == match_list_size)
-       match_list = (char **)xrealloc
-         (match_list, ((match_list_size += 10) + 1) * sizeof (char *));
-     match_list[match_index++] = match;
-     match_list[match_index] = (char *)NULL;
-   }
-
-      /* We haven't returned any strings yet. */
-      match_index = 0;
-    }
-
-  match = match_list[match_index];
-
-  if (match)
-    match_index++;
-
-  return (match);
-}
-
-/* Return 1 if PATH1 and PATH2 are the same file.  This is kind of
-   expensive.  If non-NULL STP1 and STP2 point to stat structures
-   corresponding to PATH1 and PATH2, respectively. */
-int
-same_file (path1, path2, stp1, stp2)
-     char *path1, *path2;
-     struct stat *stp1, *stp2;
-{
-  struct stat st1, st2;
-
-  if (stp1 == NULL)
-    {
-      if (stat (path1, &st1) != 0)
-   return (0);
-      stp1 = &st1;
-    }
-
-  if (stp2 == NULL)
-    {
-      if (stat (path2, &st2) != 0)
-   return (0);
-      stp2 = &st2;
-    }
-
-  return ((stp1->st_dev == stp2->st_dev) && (stp1->st_ino == stp2->st_ino));
-}
-
-/* Turn PATH, a directory, and NAME, a filename, into a full pathname.
-   This allocates new memory and returns it. */
-static char *
-make_full_pathname (path, name, name_len)
-     char *path, *name;
-     int name_len;
-{
-  char *full_path;
-  int path_len;
-
-  path_len = strlen (path);
-  full_path = xmalloc (2 + path_len + name_len);
-  strcpy (full_path, path);
-  full_path[path_len] = '/';
-  strcpy (full_path + path_len + 1, name);
-  return (full_path);
-}
-
-/* This does the dirty work for find_path_file () and find_user_command ().
-   NAME is the name of the file to search for.
-   PATH_LIST is a colon separated list of directories to search.
-   FLAGS contains bit fields which control the files which are eligible.
-   Some values are:
-      FS_EXEC_ONLY:		The file must be an executable to be found.
-      FS_EXEC_PREFERRED:	If we can't find an executable, then the
-            the first file matching NAME will do.
-      FS_EXISTS:		The first file found will do.
-*/
-static char *
-find_user_command_in_path (name, path_list, flags)
-     char *name;
-     char *path_list;
-     int flags;
-{
-  char *full_path, *path, *file_to_lose_on;
-  int status, path_index, name_len;
-  struct stat finfo;
-
-  name_len = strlen (name);
-
-  /* The file name which we would try to execute, except that it isn't
-     possible to execute it.  This is the first file that matches the
-     name that we are looking for while we are searching $PATH for a
-     suitable one to execute.  If we cannot find a suitable executable
-     file, then we use this one. */
-  file_to_lose_on = (char *)NULL;
-
-  /* We haven't started looking, so we certainly haven't seen
-     a `.' as the directory path yet. */
-  dot_found_in_search = 0;
-
-  if (absolute_program (name))
-    {
-      full_path = xmalloc (1 + name_len);
-      strcpy (full_path, name);
-
-#ifndef __NT_VC__
-      status = file_status (full_path);
-#else
-      status = nt_file_exe_status (&full_path);
-#endif
-
-      /* If the file doesn't exist, quit now. */
-      if (!(status & FS_EXISTS))
-   {
-     free (full_path);
-     return ((char *)NULL);
-   }
-
-      /* If we only care about whether the file exists or not, return
-    this filename. */
-      if (flags & FS_EXISTS)
-   return (full_path);
-
-      /* Otherwise, maybe we care about whether this file is executable.
-    If it is, and that is what we want, return it. */
-      if ((flags & FS_EXEC_ONLY) && (status & FS_EXECABLE))
-   return (full_path);
-      else
-   {
-     free (full_path);
-     return ((char *)NULL);
-   }
-    }
-
-  /* Find out the location of the current working directory. */
-  stat (".", &finfo);
-
-  path_index = 0;
-  while (path_list && path_list[path_index])
-    {
-      /* Allow the user to interrupt out of a lengthy path search. */
-      QUIT;
-
-      path = get_next_path_element (path_list, &path_index);
-
-      if (!path)
-   break;
-
-      if (*path == '~')
-   {
-     char *t = tilde_expand (path);
-     free (path);
-     path = t;
-   }
-
-      /* Remember the location of "." in the path, in all its forms
-    (as long as they begin with a `.', e.g. `./.') */
-      if (!dot_found_in_search && (*path == '.') &&
-     same_file (".", path, &finfo, (struct stat *)NULL))
-   dot_found_in_search = 1;
-
-      full_path = make_full_pathname (path, name, name_len);
-      free (path);
-
-#ifndef __NT_VC__
-      status = file_status (full_path);
-#else
-      status = nt_file_exe_status (&full_path);
-#endif
-
-      if (!(status & FS_EXISTS))
-   goto next_file;
-
-      /* The file exists.  If the caller simply wants the first file,
-    here it is. */
-      if (flags & FS_EXISTS)
-   return (full_path);
-
-       /* If the file is executable, then it satisfies the cases of
-     EXEC_ONLY and EXEC_PREFERRED.  Return this file unconditionally. */
-      if (status & FS_EXECABLE)
-   {
-     FREE (file_to_lose_on);
-
-     return (full_path);
-   }
-
-      /* The file is not executable, but it does exist.  If we prefer
-    an executable, then remember this one if it is the first one
-    we have found. */
-      if (flags & FS_EXEC_PREFERRED)
-   {
-     if (!file_to_lose_on)
-       file_to_lose_on = savestring (full_path);
-   }
-
-    next_file:
-      free (full_path);
-    }
-
-  /* We didn't find exactly what the user was looking for.  Return
-     the contents of FILE_TO_LOSE_ON which is NULL when the search
-     required an executable, or non-NULL if a file was found and the
-     search would accept a non-executable as a last resort. */
-  return (file_to_lose_on);
-}
-
-/* Given a string containing units of information separated by colons,
-   return the next one pointed to by (P_INDEX), or NULL if there are no more.
-   Advance (P_INDEX) to the character after the colon. */
-char *
-extract_colon_unit (string, p_index)
-     char *string;
-     int *p_index;
-{
-  int i, start;
-
-  i = *p_index;
-
-  if (!string || (i >= (int)strlen (string)))
-    return ((char *)NULL);
-
-  /* Each call to this routine leaves the index pointing at a colon if
-     there is more to the path.  If I is > 0, then increment past the
-     `:'.  If I is 0, then the path has a leading colon.  Trailing colons
-     are handled OK by the `else' part of the if statement; an empty
-     string is returned in that case. */
-  if (i && string[i] == PATH_COLON_CHAR)
-    i++;
-
-  start = i;
-
-  while (string[i] && (string[i] != PATH_COLON_CHAR) || (isalpha(string[start]) && (i <= start +1))) i++;
-
-  *p_index = i;
-
-  if (i == start)
-    {
-      if (string[i])
-   (*p_index)++;
-
-      /* Return "" in the case of a trailing `:'. */
-      return (savestring (""));
-    }
-  else
-    {
-      char *value;
-
-      value = xmalloc (1 + i - start);
-      strncpy (value, string + start, i - start);
-      value [i - start] = '\0';
-
-      return (value);
-    }
-}
-
-/* Return non-zero if the characters from SAMPLE are not all valid
-   characters to be found in the first line of a shell script.  We
-   check up to the first newline, or SAMPLE_LEN, whichever comes first.
-   All of the characters must be printable or whitespace. */
-
-#if !defined (isspace)
-#define isspace(c) ((c) == ' ' || (c) == '\t' || (c) == '\n' || (c) == '\f')
-#endif
-
-#if !defined (isprint)
-#define isprint(c) (isletter(c) || digit(c) || ispunct(c))
-#endif
-
-int
-check_binary_file (sample, sample_len)
-     unsigned char *sample;
-     int sample_len;
-{
-  register int i;
-
-  for (i = 0; i < sample_len; i++)
-    {
-      if (sample[i] == '\n')
-         break;
-
-      if (!isspace (sample[i]) && !isprint (sample[i]))
-      {
-         return (1);
-      }
-    }
-  return (0);
 }

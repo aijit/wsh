@@ -1,31 +1,32 @@
 This file is getopts.def, from which is created getopts.c.
 It implements the builtin "getopts" in Bash.
 
-Copyright (C) 1987, 1989, 1991 Free Software Foundation, Inc.
+Copyright (C) 1987-2015 Free Software Foundation, Inc.
 
 This file is part of GNU Bash, the Bourne Again SHell.
 
-Bash is free software; you can redistribute it and/or modify it under
-the terms of the GNU General Public License as published by the Free
-Software Foundation; either version 1, or (at your option) any later
-version.
+Bash is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
 
-Bash is distributed in the hope that it will be useful, but WITHOUT ANY
-WARRANTY; without even the implied warranty of MERCHANTABILITY or
-FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
-for more details.
+Bash is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
 
-You should have received a copy of the GNU General Public License along
-with Bash; see the file COPYING.  If not, write to the Free Software
-Foundation, 675 Mass Ave, Cambridge, MA 02139, USA.
+You should have received a copy of the GNU General Public License
+along with Bash.  If not, see <http://www.gnu.org/licenses/>.
 
 $PRODUCES getopts.c
 
 $BUILTIN getopts
-$DEPENDS_ON GETOPTS_BUILTIN
 $FUNCTION getopts_builtin
 $SHORT_DOC getopts optstring name [arg]
-Getopts is used by shell procedures to parse positional parameters.
+Parse option arguments.
+
+Getopts is used by shell procedures to parse positional parameters
+as options.
 
 OPTSTRING contains the option letters to be recognized; if a letter
 is followed by a colon, the option is expected to have an argument,
@@ -40,12 +41,12 @@ getopts places that argument into the shell variable OPTARG.
 
 getopts reports errors in one of two ways.  If the first character
 of OPTSTRING is a colon, getopts uses silent error reporting.  In
-this mode, no error messages are printed.  If an illegal option is
+this mode, no error messages are printed.  If an invalid option is
 seen, getopts places the option character found into OPTARG.  If a
 required argument is not found, getopts places a ':' into NAME and
 sets OPTARG to the option character found.  If getopts is not in
-silent mode, and an illegal option is seen, getopts places '?' into
-NAME and unsets OPTARG.  If a required option is not found, a '?'
+silent mode, and an invalid option is seen, getopts places '?' into
+NAME and unsets OPTARG.  If a required argument is not found, a '?'
 is placed in NAME, OPTARG is unset, and a diagnostic message is
 printed.
 
@@ -55,34 +56,40 @@ OPTSTRING is not a colon.  OPTERR has the value 1 by default.
 
 Getopts normally parses the positional parameters ($0 - $9), but if
 more arguments are given, they are parsed instead.
+
+Exit Status:
+Returns success if an option is found; fails if the end of options is
+encountered or an error occurs.
 $END
+
+#include <config.h>
 
 #include <stdio.h>
 
-#if defined (HAVE_STRING_H)
-#  include <string.h>
-#else /* !HAVE_STRING_H */
-#  include <strings.h>
-#endif /* !HAVE_STRING_H */
-
-#include "../shell.h"
-
-#if defined (GETOPTS_BUILTIN)
-#include "getopt.h"
-
-#define G_EOF		(-1)
-#define G_ILLEGAL_OPT	(-2)
-#define G_ARG_MISSING	(-3)
-
-/* getopt.c is not compiled if __GNU_LIBRARY__ is defined, so this
-   function will come up as undefined.  More's the pity; the default
-   behavior of the GNU getopt() is not Posix.2 compliant. */
-#if defined (__GNU_LIBRARY__) || defined(__NT_VC__)
-#  define getopt_set_posix_option_order(x)
+#if defined (HAVE_UNISTD_H)
+#  ifdef _MINIX
+#    include <sys/types.h>
+#  endif
+#  include <unistd.h>
 #endif
 
+#include "../bashansi.h"
+#include "../bashintl.h"
+
+#include "../shell.h"
+#include "common.h"
+#include "bashgetopt.h"
+#include "getopt.h"
+
+#define G_EOF		-1
+#define G_INVALID_OPT	-2
+#define G_ARG_MISSING	-3
+
 extern char *this_command_name;
-extern WORD_LIST *rest_of_args;
+
+static int getopts_unbind_variable __P((char *));
+static int getopts_bind_variable __P((char *, char *));
+static int dogetopts __P((int, char **));
 
 /* getopts_reset is magic code for when OPTIND is reset.  N is the
    value that has just been assigned to OPTIND. */
@@ -90,16 +97,48 @@ void
 getopts_reset (newind)
      int newind;
 {
-  optind = newind;
+  sh_optind = newind;
+  sh_badopt = 0;
+}
+
+static int
+getopts_unbind_variable (name)
+     char *name;
+{
+#if 0
+  return (unbind_variable (name));
+#else
+  return (unbind_variable_noref (name));
+#endif
+}
+
+static int
+getopts_bind_variable (name, value)
+     char *name, *value;
+{
+  SHELL_VAR *v;
+
+  if (legal_identifier (name))
+    {
+      v = bind_variable (name, value, 0);
+      if (v && (readonly_p (v) || noassign_p (v)))
+	return (EX_MISCERROR);
+      return (v ? EXECUTION_SUCCESS : EXECUTION_FAILURE);
+    }
+  else
+    {
+      sh_invalidid (name);
+      return (EXECUTION_FAILURE);
+    }
 }
 
 /* Error handling is now performed as specified by Posix.2, draft 11
    (identical to that of ksh-88).  The special handling is enabled if
    the first character of the option string is a colon; this handling
    disables diagnostic messages concerning missing option arguments
-   and illegal option characters.  The handling is as follows.
+   and invalid option characters.  The handling is as follows.
 
-   ILLEGAL OPTIONS:
+   INVALID OPTIONS:
         name -> "?"
         if (special_error) then
                 OPTARG = option character found
@@ -125,7 +164,7 @@ dogetopts (argc, argv)
      int argc;
      char **argv;
 {
-  int ret, special_error, old_opterr = 0, i, n;
+  int ret, special_error, old_opterr, i, n;
   char strval[2], numval[16];
   char *optstr;			/* list of options */
   char *name;			/* variable to get flag val */
@@ -133,7 +172,7 @@ dogetopts (argc, argv)
 
   if (argc < 3)
     {
-      builtin_error("usage: getopts optstring name [arg]");
+      builtin_usage ();
       return (EX_USAGE);
     }
 
@@ -148,100 +187,105 @@ dogetopts (argc, argv)
 
   if (special_error)
     {
-      old_opterr = opterr;
+      old_opterr = sh_opterr;
       optstr++;
-      opterr = 0;		/* suppress diagnostic messages */
+      sh_opterr = 0;		/* suppress diagnostic messages */
     }
 
   if (argc > 1)
     {
+      sh_getopt_restore_state (argv);
       t = argv[0];
       argv[0] = dollar_vars[0];
-      ret = getopt (argc, argv, optstr);
+      ret = sh_getopt (argc, argv, optstr);
       argv[0] = t;
     }
   else if (rest_of_args == (WORD_LIST *)NULL)
     {
-      register int i;
+      for (i = 0; i < 10 && dollar_vars[i]; i++)
+	;
 
-      for (i = 0; dollar_vars[i]; i++);
-      ret = getopt (i, dollar_vars, optstr);
+      sh_getopt_restore_state (dollar_vars);
+      ret = sh_getopt (i, dollar_vars, optstr);
     }
   else
     {
-      register int i;
       register WORD_LIST *words;
       char **v;
 
-      for (i = 0; dollar_vars[i]; i++);
-      for (words = rest_of_args; words; words = words->next, i++);
-      v = (char **)xmalloc ((i + 1) * sizeof (char *));
-      for (i = 0; dollar_vars[i]; i++)
-        v[i] = dollar_vars[i];
+      for (i = 0; i < 10 && dollar_vars[i]; i++)
+	;
       for (words = rest_of_args; words; words = words->next, i++)
-        v[i] = words->word->word;
+	;
+      v = strvec_create (i + 1);
+      for (i = 0; i < 10 && dollar_vars[i]; i++)
+	v[i] = dollar_vars[i];
+      for (words = rest_of_args; words; words = words->next, i++)
+	v[i] = words->word->word;
       v[i] = (char *)NULL;
-      ret = getopt (i, v, optstr);
+      sh_getopt_restore_state (v);
+      ret = sh_getopt (i, v, optstr);
       free (v);
     }
 
   if (special_error)
-    opterr = old_opterr;
+    sh_opterr = old_opterr;
 
-  /* Set the OPTIND variable in any case, to handle "--" skipping. */
-  if (optind < 10)
+  /* Set the OPTIND variable in any case, to handle "--" skipping.  It's
+     highly unlikely that 14 digits will be too few. */
+  if (sh_optind < 10)
     {
-      numval[14] = optind + '0';
+      numval[14] = sh_optind + '0';
       numval[15] = '\0';
       i = 14;
     }
   else
     {
       numval[i = 15] = '\0';
-      n = optind;
+      n = sh_optind;
       do
 	{
 	  numval[--i] = (n % 10) + '0';
 	}
       while (n /= 10);
     }
-  bind_variable ("OPTIND", numval + i);
+  bind_variable ("OPTIND", numval + i, 0);
 
   /* If an error occurred, decide which one it is and set the return
      code appropriately.  In all cases, the option character in error
-     is in OPTOPT.  If an illegal option was encountered, OPTARG is
+     is in OPTOPT.  If an invalid option was encountered, OPTARG is
      NULL.  If a required option argument was missing, OPTARG points
-     to a NULL string (that is, optarg[0] == 0). */
+     to a NULL string (that is, sh_optarg[0] == 0). */
   if (ret == '?')
     {
-      if (optarg == NULL)
-	ret = G_ILLEGAL_OPT;
-      else if (optarg[0] == '\0')
+      if (sh_optarg == NULL)
+	ret = G_INVALID_OPT;
+      else if (sh_optarg[0] == '\0')
 	ret = G_ARG_MISSING;
     }
 	    
   if (ret == G_EOF)
     {
-      bind_variable (name, "?");
+      getopts_unbind_variable ("OPTARG");
+      getopts_bind_variable (name, "?");
       return (EXECUTION_FAILURE);
     }
 
-  if (ret == G_ILLEGAL_OPT)
+  if (ret == G_INVALID_OPT)
     {
-      /* Illegal option encountered. */
-      strval[0] = '?';
-      strval[1] = '\0';
-      bind_variable (name, strval);
+      /* Invalid option encountered. */
+      ret = getopts_bind_variable (name, "?");
 
       if (special_error)
 	{
-	  strval[0] = (char) optopt;
+	  strval[0] = (char)sh_optopt;
 	  strval[1] = '\0';
-	  bind_variable ("OPTARG", strval);
+	  bind_variable ("OPTARG", strval, 0);
 	}
       else
-	makunbound ("OPTARG", shell_variables);
-      return (EXECUTION_SUCCESS);
+	getopts_unbind_variable ("OPTARG");
+
+      return (ret);
     }
 
   if (ret == G_ARG_MISSING)
@@ -249,31 +293,25 @@ dogetopts (argc, argv)
       /* Required argument missing. */
       if (special_error)
 	{
-	  strval[0] = ':';
-	  strval[1] = '\0';
-	  bind_variable (name, strval);
+	  ret = getopts_bind_variable (name, ":");
 
-	  strval[0] = (char) optopt;
+	  strval[0] = (char)sh_optopt;
 	  strval[1] = '\0';
-	  bind_variable ("OPTARG", strval);
+	  bind_variable ("OPTARG", strval, 0);
 	}
       else
 	{
-	  strval[0] = '?';
-	  strval[1] = '\0';
-	  bind_variable (name, strval);
-	  makunbound ("OPTARG", shell_variables);
+	  ret = getopts_bind_variable (name, "?");
+	  getopts_unbind_variable ("OPTARG");
 	}
-      return (EXECUTION_SUCCESS);
+      return (ret);
     }			
 
-  bind_variable ("OPTARG", optarg);
+  bind_variable ("OPTARG", sh_optarg, 0);
 
   strval[0] = (char) ret;
   strval[1] = '\0';
-  bind_variable (name, strval);
-
-  return (EXECUTION_SUCCESS);
+  return (getopts_bind_variable (name, strval));
 }
 
 /* The getopts builtin.  Build an argv, and call dogetopts with it. */
@@ -281,33 +319,29 @@ int
 getopts_builtin (list)
      WORD_LIST *list;
 {
-  register int	i;
   char **av;
   int ac, ret;
-  WORD_LIST *t = list;
-  static int order_set = 0;
 
-  if (!list)
-    return EXECUTION_FAILURE;
-
-  for (ac = 0; t; t = t->next, ac++);
-
-  ac++;
-  av = (char **)xmalloc ((1 + ac) * sizeof (char *));
-  av[ac] = (char *) NULL;
-  av[0] = savestring (this_command_name);
-
-  for (t = list, i = 1; t; t = t->next, i++)
-    av[i] = savestring (t->word->word);
-
-  if (order_set == 0)
+  if (list == 0)
     {
-      getopt_set_posix_option_order (1);
-      order_set++;
+      builtin_usage ();
+      return EX_USAGE;
     }
 
+  reset_internal_getopt ();
+  if ((ret = internal_getopt (list, "")) != -1)
+    {
+      if (ret == GETOPT_HELP)
+	builtin_help ();
+      else
+	builtin_usage ();
+      return (EX_USAGE);
+    }
+  list = loptend;
+
+  av = make_builtin_argv (list, &ac);
   ret = dogetopts (ac, av);
-  free_array (av);
+  free ((char *)av);
+
   return (ret);
 }
-#endif /* GETOPTS_BUILTIN */
