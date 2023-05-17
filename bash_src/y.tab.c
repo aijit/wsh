@@ -64,7 +64,9 @@
 /* Copy the first part of user declarations.  */
 #line 21 "/usr/homes/chet/src/bash/src/parse.y" /* yacc.c:339  */
 
+#ifdef HAVE_CONFIG_H
 #include "config.h"
+#endif
 
 #include "bashtypes.h"
 #include "bashansi.h"

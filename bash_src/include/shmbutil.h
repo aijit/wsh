@@ -24,7 +24,9 @@
 #include "stdc.h"
 
 /* Include config.h for HANDLE_MULTIBYTE */
+#ifdef HAVE_CONFIG_H
 #include <config.h>
+#endif
 
 #if defined (HANDLE_MULTIBYTE)
 #include "shmbchar.h"

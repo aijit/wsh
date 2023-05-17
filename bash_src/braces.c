@@ -20,7 +20,9 @@
 
 /* Stuff in curly braces gets expanded before all other shell expansions. */
 
+#ifdef HAVE_CONFIG_H
 #include "config.h"
+#endif
 
 #if defined (BRACE_EXPANSION)
 

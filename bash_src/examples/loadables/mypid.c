@@ -11,7 +11,9 @@
  * references to it do not attempt to access memory that is no longer part
  * of this process's address space.
  */
+#ifdef HAVE_CONFIG_H
 #include <config.h>
+#endif
 
 #include <stdio.h>
 #include <errno.h>

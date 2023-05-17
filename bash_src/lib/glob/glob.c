@@ -22,7 +22,9 @@
    Unix programs use to perform this function.  I wrote this from scratch
    based on specifications for the pattern matching.  --RMS.  */
 
+#ifdef HAVE_CONFIG_H
 #include <config.h>
+#endif
 
 #if !defined (__GNUC__) && !defined (HAVE_ALLOCA_H) && defined (_AIX)
   #pragma alloca

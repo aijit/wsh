@@ -18,7 +18,9 @@
    along with Bash.  If not, see <http://www.gnu.org/licenses/>.
 */
 
+#ifdef HAVE_CONFIG_H
 #include <config.h>
+#endif
 
 #if defined (HAVE_LONG_LONG) && !defined (HAVE_STRTOLL)
 

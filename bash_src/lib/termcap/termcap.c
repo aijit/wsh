@@ -21,7 +21,9 @@
 /* Emacs config.h may rename various library functions such as malloc.  */
 #ifdef HAVE_CONFIG_H
 
+#ifdef HAVE_CONFIG_H
 #include <config.h>
+#endif
 
 /* Get the O_* definitions for open et al.  */
 #if !defined (_MINIX) && defined (HAVE_SYS_FILE_H)

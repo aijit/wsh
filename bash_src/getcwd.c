@@ -40,7 +40,9 @@
 
 #include "posixstat.h"
 #include "maxpath.h"
+#ifdef HAVE_CONFIG_H
 #include "config.h"
+#endif
 
 #if defined (HAVE_STDLIB_H)
 #  include <stdlib.h>

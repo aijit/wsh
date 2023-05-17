@@ -26,7 +26,9 @@
 /*		      Unwind Protection Scheme for Bash		    */
 /*								    */
 /* **************************************************************** */
+#ifdef HAVE_CONFIG_H
 #include "config.h"
+#endif
 
 #include "bashtypes.h"
 #include "bashansi.h"

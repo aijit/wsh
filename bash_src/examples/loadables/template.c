@@ -2,7 +2,9 @@
 
 /* See Makefile for compilation details. */
 
+#ifdef HAVE_CONFIG_H
 #include <config.h>
+#endif
 
 #if defined (HAVE_UNISTD_H)
 #  include <unistd.h>

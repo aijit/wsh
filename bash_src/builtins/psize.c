@@ -21,7 +21,9 @@
 /*  Write output in 128-byte chunks until we get a sigpipe or write gets an
     EPIPE.  Then report how many bytes we wrote.  We assume that this is the
     pipe size. */
+#ifdef HAVE_CONFIG_H
 #include <config.h>
+#endif
 
 #if defined (HAVE_UNISTD_H)
 #  ifdef _MINIX

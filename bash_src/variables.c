@@ -18,7 +18,9 @@
    along with Bash.  If not, see <http://www.gnu.org/licenses/>.
 */
 
+#ifdef HAVE_CONFIG_H
 #include "config.h"
+#endif
 
 #include "bashtypes.h"
 #include "posixstat.h"

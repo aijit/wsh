@@ -36,7 +36,9 @@
 #include <process.h>
 #include <general.h>
 #include "nt_types.h"
+#ifdef HAVE_CONFIG_H
 #include "config.h"
+#endif
 
 #include <assert.h>
 

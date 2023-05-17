@@ -30,7 +30,9 @@ static char	SCCSid[] = "@(#)alloca.c	1.1";	/* for the "what" utility */
 #endif
 
 #ifdef emacs
+#ifdef HAVE_CONFIG_H
 #include "config.h"
+#endif
 #ifdef static
 /* actually, only want this if static is defined as ""
    -- this is for usg, in which emacs must undefine static

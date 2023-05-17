@@ -19,7 +19,9 @@
 #ifndef	_STRMATCH_H
 #define	_STRMATCH_H	1
 
+#ifdef HAVE_CONFIG_H
 #include <config.h>
+#endif
 
 #include "stdc.h"
 

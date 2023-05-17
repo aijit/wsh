@@ -25,7 +25,9 @@
 */
 #define INSTALL_DEBUG_MODE
 
+#ifdef HAVE_CONFIG_H
 #include "config.h"
+#endif
 
 #include "bashtypes.h"
 #if !defined (_MINIX) && defined (HAVE_SYS_FILE_H)

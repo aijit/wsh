@@ -18,7 +18,9 @@
    along with Bash.  If not, see <http://www.gnu.org/licenses/>.
 */
 
+#ifdef HAVE_CONFIG_H
 #include <config.h>
+#endif
 
 #include <bashtypes.h>
 #if ! defined(_MINIX) && defined (HAVE_SYS_FILE_H)
