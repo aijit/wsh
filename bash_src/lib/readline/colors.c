@@ -34,6 +34,8 @@
 
 #include <stdio.h>
 
+#include <sys/types.h> // mode_t
+#include <sys/stat.h> // S_ISUID
 #include "posixstat.h" // stat related macros (S_ISREG, ...)
 #include <fcntl.h> // S_ISUID
 
@@ -215,8 +217,8 @@ _rl_print_color_indicator (const char *f)
         colored_filetype = C_LINK;
       else if (S_ISFIFO (mode))
         colored_filetype = C_FIFO;
-      else if (S_ISSOCK (mode))
-        colored_filetype = C_SOCK;
+//      else if (S_ISSOCK (mode))
+//        colored_filetype = C_SOCK;
       else if (S_ISBLK (mode))
         colored_filetype = C_BLK;
       else if (S_ISCHR (mode))

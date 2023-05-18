@@ -74,7 +74,7 @@ Keymap rl_binding_keymap;
 
 static int _rl_skip_to_delim PARAMS((char *, int, int));
 
-#if defined (USE_VARARGS) && defined (PREFER_STDARG)
+#if defined (USE_VARARGS) || defined (PREFER_STDARG)
 static void _rl_init_file_error (const char *, ...)  __attribute__((__format__ (printf, 1, 2)));
 #else
 static void _rl_init_file_error ();
