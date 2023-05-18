@@ -27,6 +27,8 @@
 
 #ifdef HAVE_CONFIG_H
 # include <config.h>
+#else
+#include <stdint.h>
 #endif
 
 #include <ctype.h>

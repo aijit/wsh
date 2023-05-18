@@ -23,6 +23,9 @@
 #define _GETTEXTP_H
 
 #include <stddef.h>		/* Get size_t.  */
+#ifdef HAVE_SYS_PARAM_H
+#include <sys/param.h>
+#endif
 
 #ifdef _LIBC
 # include "../iconv/gconv_int.h"
