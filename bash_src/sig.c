@@ -42,6 +42,7 @@
 #endif /* JOB_CONTROL */
 #include "siglist.h"
 #include "sig.h"
+#include "dsignal.h"
 #include "trap.h"
 
 #include "builtins/common.h"

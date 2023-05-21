@@ -18,8 +18,10 @@ sighandler
 suspend_continue (sig)
      int sig;
 {
+#ifdef HAVE_POSIX_SIGNALS
   set_signal_handler (SIGCONT, old_cont);
   set_signal_handler (SIGTSTP, old_tstp);
+#endif
 #if !defined (VOID_SIGHANDLER)
   return (0);
 #endif /* !VOID_SIGHANDLER */
@@ -50,9 +52,11 @@ suspend_builtin (list)
     }
 
 do_suspend:
+#ifdef HAVE_POSIX_SIGNALS
   old_cont = (SigHandler *)set_signal_handler (SIGCONT, suspend_continue);
   old_tstp = (SigHandler *)set_signal_handler (SIGTSTP, SIG_DFL);
   killpg (shell_pgrp, SIGTSTP);
+#endif
   return (EXECUTION_SUCCESS);
 }
 

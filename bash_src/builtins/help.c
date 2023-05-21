@@ -24,7 +24,7 @@ help_builtin (list)
       register int i, j;
       char blurb[256];
 
-      show_shell_version ();
+      show_shell_version (0);
       printf (
 "Shell commands that are defined internally.  Type `help' to see this list.\n\
 Type `help name' to find out more about the function `name'.\n\

@@ -2,6 +2,7 @@
 
 #include <sys/types.h>
 #include <signal.h>
+#include "dsignal.h"
 #include "../shell.h"
 #include "../jobs.h"
 

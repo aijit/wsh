@@ -45,6 +45,7 @@
 #include "pathexp.h"
 #include "hashcmd.h"
 #include "findcmd.h"	/* matching prototypes and declarations */
+#include "config-top.h"
 
 #include <glob/strmatch.h>
 

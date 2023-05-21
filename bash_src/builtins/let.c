@@ -17,7 +17,7 @@ let_builtin (list)
 
   while (list)
     {
-      ret = evalexp (list->word->word);
+      ret = evalexp (list->word->word, NULL);
       list = list->next;
     }
 

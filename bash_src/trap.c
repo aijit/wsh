@@ -36,6 +36,7 @@
 #include "bashintl.h"
 
 #include <signal.h>
+#include <dsignal.h>
 
 #include "trap.h"
 

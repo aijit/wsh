@@ -147,8 +147,8 @@ cd_builtin (list)
 
 	directory = get_working_directory ("cd");
 
-	bind_variable ("OLDPWD", get_string_value ("PWD"));
-	bind_variable ("PWD", directory);
+	bind_variable ("OLDPWD", get_string_value ("PWD"), 0);
+	bind_variable ("PWD", directory, 0);
 
 	FREE (directory);
       }

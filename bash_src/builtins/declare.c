@@ -16,6 +16,7 @@
 #include "../shell.h"
 
 extern int variable_context, array_needs_making;
+extern int variable_in_context __P((SHELL_VAR *));
 
 static int declare_internal ();
 
@@ -130,7 +131,7 @@ declare_internal (list, local_var)
   while (list)
     {
       char *value, *name = savestring (list->word->word);
-      int offset = assignment (name);
+      int offset = assignment (name, 0);
 
       if (offset)
 	{
@@ -190,7 +191,7 @@ declare_internal (list, local_var)
 	  var = find_variable (name);
 
 	  if (!var)
-	    var = bind_variable (name, "");
+	    var = bind_variable (name, "", 0);
 
 	  /* We are not allowed to rebind readonly variables that
 	     already are readonly unless we are turning off the
@@ -213,10 +214,10 @@ declare_internal (list, local_var)
 	      free (var->value);
 	      if (integer_p (var))
 		{
-		  long val, evalexp ();
+		  long val;
 		  char *itos ();
 
-		  val = evalexp (value);
+		  val = evalexp (value, 0);
 		  var->value = itos ((int)val);
 		}
 	      else

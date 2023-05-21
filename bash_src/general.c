@@ -43,6 +43,7 @@
 #include "shell.h"
 #include "test.h"
 #include "trap.h"
+#include "fcntl.h"
 
 #if defined (HAVE_MBSTR_H) && defined (HAVE_MBSCHR)
 #  include <mbstr.h>		/* mbschr */
@@ -1128,9 +1129,12 @@ bash_tilde_expand (s, assign_p)
 /*								    */
 /* **************************************************************** */
 
+#include "unistd.h"
+#include <grp.h>
 static int ngroups, maxgroups;
 
 /* The set of groups that this user is a member of. */
+#define GETGROUPS_T int
 static GETGROUPS_T *group_array = (GETGROUPS_T *)NULL;
 
 #if !defined (NOGROUP)

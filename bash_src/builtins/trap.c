@@ -82,7 +82,7 @@ trap_builtin (list)
       char *first_arg = list->word->word;
       int operation = SET, any_failed = 0;
 
-      if (signal_object_p (first_arg))
+      if (signal_object_p (first_arg, 0))
 	operation = REVERT;
       else
 	{

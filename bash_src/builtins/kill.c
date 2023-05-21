@@ -11,6 +11,7 @@ extern int errno;
 #include "../jobs.h"
 #include "common.h"
 #include <errno.h>
+#include "dsignal.h"
 
 #if defined (JOB_CONTROL)
 extern int interactive;
@@ -56,7 +57,7 @@ kill_builtin (list)
 	      if (sigspec[0] == '0' && !sigspec[1])
 		signal = 0;
 	      else
-		signal = decode_signal (sigspec);
+		signal = decode_signal (sigspec, 0);
 	      list = list->next;
 	    }
 	  else
@@ -76,7 +77,7 @@ kill_builtin (list)
       else if ((*word == '-') && !saw_signal)
 	{
 	  sigspec = word + 1;
-	  signal = decode_signal (sigspec);
+	  signal = decode_signal (sigspec, 0);
 	  saw_signal++;
 	  list = list->next;
 	}

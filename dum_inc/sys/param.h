@@ -34,6 +34,7 @@
 #define LOCALEDIR           "/usr/share/locale"
 #define LOCALE_ALIAS_PATH   "/usr/share/locale/locale.alias"
 #define LIBDIR              "/usr/lib"
+#define PACKAGE             "foonly"
 
 /* BSD names for some <limits.h> values.  */
 

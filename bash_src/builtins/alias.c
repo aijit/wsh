@@ -1,7 +1,9 @@
 /* alias.c, created from alias.def. */
 #line 33 "./alias.def"
 
+#ifdef HAVE_CONFIG_H
 #include "../config.h"
+#endif
 
 #if defined (ALIAS)
 #  include <stdio.h>

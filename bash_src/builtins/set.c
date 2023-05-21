@@ -103,7 +103,7 @@ set_minus_o_option (on_or_off, option_name)
   else if (STREQ (option_name, "noclobber"))
     {
       if (on_or_off == FLAG_ON)
-	bind_variable ("noclobber", "");
+	bind_variable ("noclobber", "", 0);
       else
 	unbind_variable ("noclobber");
       stupidly_hack_special_variables ("noclobber");
@@ -113,7 +113,7 @@ set_minus_o_option (on_or_off, option_name)
       unbind_variable ("ignoreeof");
       unbind_variable ("IGNOREEOF");
       if (on_or_off == FLAG_ON)
-	bind_variable ("IGNOREEOF", "10");
+	bind_variable ("IGNOREEOF", "10", 0);
       stupidly_hack_special_variables ("IGNOREEOF");
     }
   
@@ -152,7 +152,7 @@ set_minus_o_option (on_or_off, option_name)
       unbind_variable ("POSIX_PEDANTIC");
       if (on_or_off == FLAG_ON)
 	{
-	  bind_variable ("POSIXLY_CORRECT", "");
+	  bind_variable ("POSIXLY_CORRECT", "", 0);
 	  stupidly_hack_special_variables ("POSIXLY_CORRECT");
 	}
     }
@@ -374,8 +374,8 @@ unset_builtin (list)
     {
       name = list->word->word;
 
-      if (!unset_function &&
-	  find_name_in_list (name, non_unsettable_vars) > -1)
+      if (!unset_function /*&&
+	  find_name_in_list (name, non_unsettable_vars) > -1 */)
 	{
 	  builtin_error ("%s: cannot unset", name);
 	  any_failed++;

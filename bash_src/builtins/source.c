@@ -14,7 +14,7 @@
 
 #include "../shell.h"
 #include "../posixstat.h"
-#include "../filecntl.h"
+#include "filecntl.h"
 #include "../execute_cmd.h"
 
 /* Not all systems declare ERRNO in errno.h... and some systems #define it! */

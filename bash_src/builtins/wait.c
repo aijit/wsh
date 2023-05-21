@@ -3,6 +3,7 @@
 
 #include <sys/types.h>
 #include <signal.h>
+#include "dsignal.h"
 #include "../shell.h"
 #include "../jobs.h"
 
@@ -44,7 +45,7 @@ wait_builtin (list)
 	  if (all_digits (w + 1))
 	    {
 	      pid = (pid_t)atoi (w);
-	      status = wait_for_single_pid (pid);
+	      status = wait_for_single_pid (pid, 0);
 	    }
 	  else
 	    {

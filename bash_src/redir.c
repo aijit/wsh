@@ -31,6 +31,7 @@
 #if !defined (_MINIX) && defined (HAVE_SYS_FILE_H)
 #  include <sys/file.h>
 #endif
+#include <fcntl.h>
 #include "filecntl.h"
 #include "posixstat.h"
 
@@ -47,6 +48,7 @@ extern int errno;
 #include "bashansi.h"
 #include "bashintl.h"
 #include "memalloc.h"
+#include "filecntl.h"
 
 #define NEED_FPURGE_DECL
 

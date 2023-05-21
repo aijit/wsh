@@ -40,6 +40,7 @@
 #include <signal.h>
 #include <errno.h>
 #include "filecntl.h"
+#include "config-top.h"
 #if defined (HAVE_PWD_H)
 #  include <pwd.h>
 #endif

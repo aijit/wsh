@@ -89,7 +89,7 @@ command_builtin (list)
 	add_unwind_protect ((Function *)restore_path, old_path);
 
 	standard_path = get_standard_path ();
-	bind_variable ("PATH", standard_path);
+	bind_variable ("PATH", standard_path, 0);
 	free (standard_path);
       }
     command = make_bare_simple_command ();
@@ -119,7 +119,7 @@ static void
 restore_path (var)
      char *var;
 {
-  bind_variable ("PATH", var);
+  bind_variable ("PATH", var, 0);
   free (var);
 }
 

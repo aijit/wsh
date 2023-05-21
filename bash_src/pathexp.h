@@ -42,6 +42,8 @@ extern char *glob_error_return;
 #  define FNMATCH_EXTFLAG	0
 #endif /* !EXTENDED_GLOB */
 
+extern int glob_ignore_case, match_ignore_case;
+
 #define FNMATCH_IGNCASE		(match_ignore_case ? FNM_CASEFOLD : 0)
 #define FNMATCH_NOCASEGLOB	(glob_ignore_case ? FNM_CASEFOLD : 0)
 

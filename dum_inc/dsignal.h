@@ -52,7 +52,7 @@ Modified by Paul Budnik for GNU BASH
 
 
 /* Typedef stuff *************************************************************/
-typedef unsigned long sigset_t;
+//typedef unsigned long sigset_t;
 
 
 /* Struct stuff **************************************************************/
@@ -71,6 +71,7 @@ int  sighold(int signal_Number);
 int  sigrelse(int signal_Number);
 int sigaction(int signal_Number,struct sigaction* sigaction_Info,
      struct sigaction* signaction_InfoOld);
+/*
 int sigaddset(sigset_t* sigset_Info,int signal_Number);
 int sigdelset(sigset_t* sigset_Info,int signal_Number);
 int sigemptyset(sigset_t* sigset_Info);
@@ -79,6 +80,7 @@ int sigismember(sigset_t* sigset_Info,int signal_Number);
 int sigpending(sigset_t* sigset_Info);
 int sigprocmask(int mask_Function,sigset_t* sigset_Info,
      sigset_t* sigset_InfoOld);
+*/
 void (*Downhill_Signal_Set(int signal_Number,
       void (*signal_Handler)(int,...)))(int,...);
 int  Downhill_Signal_Raise(int signal_Number);

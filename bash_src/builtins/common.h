@@ -180,10 +180,10 @@ extern void initialize_bashopts __P((int));
 extern void set_compatibility_opts __P((void));
 
 /* Functions from type.def */
-extern int describe_command __P((char *, int));
+extern int describe_command __P((char *, int, int));
 
 /* Functions from setattr.def */
-extern int set_or_show_attributes __P((WORD_LIST *, int, int));
+extern int set_or_show_attributes __P((WORD_LIST *, int));
 extern int show_all_var_attributes __P((int, int));
 extern int show_var_attributes __P((SHELL_VAR *, int, int));
 extern int show_name_attributes __P((char *, int));

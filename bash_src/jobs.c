@@ -192,10 +192,10 @@ struct bgpids bgpids = { 0, 0, 0 };
 /* The array of known jobs. */
 JOB **jobs = (JOB **)NULL;
 
-#if 0
+//#if 0
 /* The number of slots currently allocated to JOBS. */
 int job_slots = 0;
-#endif
+//#endif
 
 /* The controlling tty for this shell. */
 int shell_tty = -1;

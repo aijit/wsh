@@ -813,7 +813,7 @@ int nt_pipe_filedes[2] ;
 
 int nt_pipe(int filedes[2], const char *f, int l)
 {
-   int ret = _pipe(filedes,256,_O_BINARY);
+   int ret = _pipe(filedes,256,O_BINARY);
 
    nt_addPipeAssoc(filedes[0], filedes[1]);
 

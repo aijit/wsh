@@ -22,6 +22,8 @@
 #include "config.h"
 #endif
 
+#include "dtypes.h"
+
 #include "bashjmp.h"
 
 #include "command.h"

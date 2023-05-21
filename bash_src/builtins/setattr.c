@@ -98,7 +98,7 @@ set_or_show_attributes (list, attribute)
 	      continue;
 	    }
 
-	  assign = assignment (name);
+	  assign = assignment (name, 0);
 
           if (assign)
 	    name[assign] = '\0';
@@ -132,7 +132,7 @@ set_or_show_attributes (list, attribute)
 
 	      if (tv = find_tempenv_variable (name))
 		{
-		  var = bind_variable (tv->name, tv->value);
+		  var = bind_variable (tv->name, tv->value, 0);
 		  dispose_variable (tv);
 		}
 	      else
@@ -140,7 +140,7 @@ set_or_show_attributes (list, attribute)
 
 	      if (!var)
 		{
-		  var = bind_variable (name, (char *)NULL);
+		  var = bind_variable (name, (char *)NULL, 0);
 		  var->attributes |= att_invisible;
 		}
 

@@ -31,6 +31,7 @@
 
 #include <stdio.h>
 #include <signal.h>
+#include "dsignal.h"
 
 #include <errno.h>
 

@@ -147,11 +147,11 @@ read_builtin (list)
       if (saw_escape)
       {
          t = dequote_string (input_string);
-         var = bind_variable ("REPLY", t);
+         var = bind_variable ("REPLY", t, 0);
          free (t);
       }
       else
-         var = bind_variable ("REPLY", input_string);
+         var = bind_variable ("REPLY", input_string, 0);
       var->attributes &= ~att_invisible;
       free (input_string);
     }
@@ -185,16 +185,16 @@ read_builtin (list)
         if (t && saw_escape)
         {
            t1 = dequote_string (t);
-           var = bind_variable (varname, t1);
+           var = bind_variable (varname, t1, 0);
            free (t1);
         }
         else
-           var = bind_variable (varname, t);
+           var = bind_variable (varname, t, 0);
      }
 	  else
      {
         t = (char *)0;
-        var = bind_variable (varname, "");
+        var = bind_variable (varname, "", 0);
      }
      
 	  stupidly_hack_special_variables (varname);
@@ -209,11 +209,11 @@ read_builtin (list)
       if (saw_escape)
       {
          t = dequote_string (input_string);
-         var = bind_variable (list->word->word, t);
+         var = bind_variable (list->word->word, t, 0);
 	  free (t);
       }
       else
-         var = bind_variable (list->word->word, input_string);
+         var = bind_variable (list->word->word, input_string, 0);
       stupidly_hack_special_variables (list->word->word);
       var->attributes &= ~att_invisible;
       free (orig_input_string);

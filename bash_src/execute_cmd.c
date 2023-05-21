@@ -35,6 +35,7 @@
 #include "filecntl.h"
 #include "posixstat.h"
 #include <signal.h>
+#include "dsignal.h"
 #if defined (HAVE_SYS_PARAM_H)
 #  include <sys/param.h>
 #endif
@@ -87,6 +88,7 @@ extern int errno;
 #include "builtins/builtext.h"	/* list of builtins */
 
 #include "builtins/getopt.h"
+#include "config-top.h"
 
 #include <glob/strmatch.h>
 #include <tilde/tilde.h>
@@ -4475,7 +4477,7 @@ execute_builtin (builtin, words, flags, subshell)
      problem only with the `unset', `source' and `eval' builtins.
      `mapfile' is a special case because it uses evalstring (same as
      eval or source) to run its callbacks. */
-  isbltinenv = (builtin == source_builtin || builtin == eval_builtin || builtin == unset_builtin || builtin == mapfile_builtin);
+  isbltinenv = (builtin == source_builtin || builtin == eval_builtin || builtin == unset_builtin /*|| builtin == mapfile_builtin*/);
 
   if (isbltinenv)
     {

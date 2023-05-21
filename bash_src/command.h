@@ -23,6 +23,7 @@
 #define _COMMAND_H_
 
 #include "stdc.h"
+#include <sys/types.h>
 
 /* Instructions describing what kind of thing to do for a redirection. */
 enum r_instruction {

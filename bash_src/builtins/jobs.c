@@ -6,6 +6,7 @@
 #include <sys/types.h>
 #include <signal.h>
 #include "../jobs.h"
+#include "dsignal.h"
 
 #include "bashgetopt.h"
 

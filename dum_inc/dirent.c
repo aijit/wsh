@@ -114,7 +114,7 @@ DIR* opendir(char* dir_Name)
       return NULL;
    }
 
-   if ((dir_Stat.st_mode&_S_IFDIR) == 0)
+   if ((dir_Stat.st_mode&S_IFDIR) == 0)
    {
       errno = ENOTDIR;
       return NULL;

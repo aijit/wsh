@@ -57,7 +57,7 @@
 #include "stdc.h"
 
 #include "../builtins.h"
-#include "tmpbuiltins.h"
+//#include "tmpbuiltins.h"
 
 #if defined (USING_BASH_MALLOC)
 #undef xmalloc
@@ -158,7 +158,7 @@ write_helpfiles (builtins)
   int i, hdlen;
   struct builtin b;
 
-  i = mkdir ("helpfiles", 0777);
+  i = mkdir ("helpfiles");
   if (i < 0 && errno != EEXIST)
     {
       fprintf (stderr, "write_helpfiles: helpfiles: cannot create directory\n");

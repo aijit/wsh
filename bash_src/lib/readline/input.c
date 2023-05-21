@@ -46,6 +46,7 @@
 #endif /* HAVE_STDLIB_H */
 
 #include <signal.h>
+#include "fcntl.h"
 
 #include "posixselect.h"
 

@@ -150,7 +150,7 @@ struct pidstat {
   ps_index_t bucket_prev;
 
   pid_t pid;
-  bits16_t status;		/* only 8 bits really needed */
+  unsigned short status;		/* only 8 bits really needed */
 };
 
 struct bgpids {
@@ -186,6 +186,7 @@ extern volatile pid_t last_made_pid, last_asynchronous_pid;
 extern int asynchronous_notification;
 
 extern JOB **jobs;
+extern int job_slots;
 
 extern void making_children __P((void));
 extern void stop_making_children __P((void));

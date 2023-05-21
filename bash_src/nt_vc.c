@@ -79,7 +79,7 @@ extern int interactive;
 #include "shell.h"
 #include "y.tab.h"
 #include "flags.h"
-#include "hash.h"
+#include "hashlib.h"
 #include "jobs.h"
 #include "execute_cmd.h"
 #include "general.h"

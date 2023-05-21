@@ -295,7 +295,9 @@ read_command ()
 	  tmout_len = atoi (value_cell (tmout_var));
 	  if (tmout_len > 0)
 	    {
+#ifdef HAVE_POSIX_SIGNALS
 	      old_alrm = set_signal_handler (SIGALRM, alrm_catcher);
+#endif
 	      alarm (tmout_len);
 	    }
 	}
@@ -309,7 +311,9 @@ read_command ()
   if (interactive && tmout_var && (tmout_len > 0))
     {
       alarm(0);
+#ifdef HAVE_POSIX_SIGNALS
       set_signal_handler (SIGALRM, old_alrm);
+#endif
     }
 
   return (result);
