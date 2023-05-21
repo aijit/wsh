@@ -29,6 +29,7 @@
 #endif
 
 #include <shtty.h>
+#include "sys/ioctl.h"
 
 static TTYSTRUCT ttin, ttout;
 static int ttsaved = 0;

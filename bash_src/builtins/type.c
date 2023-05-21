@@ -5,7 +5,7 @@
 
 #include <stdio.h>
 #include <sys/types.h>
-#include "../posixstat.h"
+#include "posixstat.h"
 #include "../shell.h"
 #include "../execute_cmd.h"
 

@@ -27,6 +27,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <ctype.h>
+//#include <fcntl.h>
+//#include <sys/stat.h>
 #include <share.h>
 #include "bashtypes.h"
 /* #include <sys/file.h> */
@@ -77,7 +79,7 @@ extern int interactive;
 #endif /* !HAVE_STRING_H */
 
 #include "shell.h"
-#include "y.tab.h"
+//#include "y.tab.h"
 #include "flags.h"
 #include "hashlib.h"
 #include "jobs.h"
@@ -105,7 +107,7 @@ extern int interactive;
 
 extern int last_command_exit_value;
 extern void internal_error(const char * fmt,...);
-extern void unwind_protect_var (int * var, char * value, int size) ;
+//extern void unwind_protect_var (int * var, char * value, int size) ;
 extern int execute_builtin (Function * builtin, WORD_LIST *words, int flags,
    int subshell) ;
 extern int execute_function (SHELL_VAR * var, WORD_LIST * words, int flags,
@@ -1385,7 +1387,7 @@ int nt_open(const char * path, int oflag, const char *f, int l)
 
    if (!(oflag & _O_TEXT)) oflag |= _O_BINARY ;
 
-   fd = sopen((char *) path, oflag | _O_NOINHERIT, _SH_DENYNO ,_S_IREAD | _S_IWRITE);
+   fd = sopen((char *) path, oflag | _O_NOINHERIT, _SH_DENYNO , S_IREAD | S_IWRITE);
 
    /* see comment below in nt_open3() */
    if (oflag & O_APPEND)
@@ -1768,7 +1770,7 @@ void nt_unwind_protect_jmp_buf(enum nt_long_jmp_enum j)
    }
    nt_leave_critsec(__FILE__, __LINE__);
 
-   unwind_protect_var((int *) jmp_to,(char *) jmp_to,sizeof (jmp_buf));
+   unwind_protect_var(jmp_to);
 }
 
 /** thread-safe longjmp implementation for NT */
@@ -1785,6 +1787,8 @@ void nt_longjmp(enum nt_long_jmp_enum j, int val, const char *file, int line)
    nt_leave_critsec(file,line);
    longjmp(*jmp_to,val);
 }
+
+const char *nt_get_shell_binary();
 
 int nt_execute_shell_script(char *command, char **args, char **env, int async)
 {

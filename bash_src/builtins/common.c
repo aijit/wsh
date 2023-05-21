@@ -79,8 +79,8 @@ extern char *this_command_name, *shell_name;
 extern const char * const bash_getcwd_errstr;
 
 /* Used by some builtins and the mainline code. */
-sh_builtin_func_t *last_shell_builtin = (sh_builtin_func_t *)NULL;
-sh_builtin_func_t *this_shell_builtin = (sh_builtin_func_t *)NULL;
+extern sh_builtin_func_t *last_shell_builtin;
+extern sh_builtin_func_t *this_shell_builtin;
 
 /* **************************************************************** */
 /*								    */

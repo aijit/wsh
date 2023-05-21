@@ -78,7 +78,7 @@ extern int executing_command_builtin;
 extern int current_token;		/* parse.y */
 
 /* How many `levels' of sourced files we have. */
-int sourcelevel = 0;
+extern int sourcelevel;
 
 static int
 _evalfile (filename, flags)

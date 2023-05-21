@@ -25,6 +25,7 @@
 #  define _EXTERNS_H_
 
 #include "stdc.h"
+#include "command.h"
 
 /* Functions from expr.c. */
 extern intmax_t evalexp __P((char *, int *));

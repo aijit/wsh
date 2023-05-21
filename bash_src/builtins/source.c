@@ -13,7 +13,7 @@
 #endif /* !HAVE_STRING_H */
 
 #include "../shell.h"
-#include "../posixstat.h"
+#include "posixstat.h"
 #include "filecntl.h"
 #include "../execute_cmd.h"
 

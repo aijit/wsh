@@ -93,7 +93,7 @@ extern int yydebug;
     BAR_AND = 303,
     yacc_EOF = 304
   };
-#endif
+#else
 /* Tokens.  */
 #define IF 258
 #define THEN 259
@@ -142,6 +142,7 @@ extern int yydebug;
 #define GREATER_BAR 302
 #define BAR_AND 303
 #define yacc_EOF 304
+#endif // YYTOKENTYPE
 
 /* Value type.  */
 #if ! defined YYSTYPE && ! defined YYSTYPE_IS_DECLARED

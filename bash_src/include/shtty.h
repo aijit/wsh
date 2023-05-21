@@ -32,7 +32,7 @@
 #  if defined (HAVE_TERMIO_H)
 #    define TERMIO_TTY_DRIVER
 #  else
-#    define NEW_TTY_DRIVER
+//#    define NEW_TTY_DRIVER
 #  endif
 #endif
 

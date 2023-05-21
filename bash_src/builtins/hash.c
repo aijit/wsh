@@ -4,7 +4,7 @@
 #line 32 "./hash.def"
 
 #include <sys/types.h>
-#include "../posixstat.h"
+#include "posixstat.h"
 
 #include <stdio.h>
 

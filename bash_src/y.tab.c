@@ -67,7 +67,7 @@
 #ifdef HAVE_CONFIG_H
 #include "config.h"
 #endif
-#include "config-top.h"
+//#include "config-top.h"
 
 #include "bashtypes.h"
 #include "bashansi.h"

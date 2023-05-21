@@ -8,7 +8,7 @@
 
 #include "../shell.h"
 #include <sys/types.h>
-#include "../posixstat.h"
+#include "posixstat.h"
 #include <signal.h>
 #include <errno.h>
 

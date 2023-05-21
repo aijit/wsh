@@ -23,12 +23,15 @@
 
 #ifdef HAVE_CONFIG_H
 #include "config.h"
+#else
+#include "config-top.h"
 #endif
 
 #include "bashtypes.h"
 #include "trap.h"
 #include <stdio.h>
 #include <signal.h>
+#include "dsignal.h"
 #include <errno.h>
 
 #if defined (HAVE_UNISTD_H)
@@ -1299,7 +1302,7 @@ append_process (name, pid, status, jid)
   t->next = (PROCESS *)NULL;
   t->pid = pid;
   /* set process exit status using offset discovered by configure */
-  t->status = (status & 0xff) << WEXITSTATUS_OFFSET;
+  t->status = (status & 0xff) /* << WEXITSTATUS_OFFSET */;
   t->running = PS_DONE;
   t->command = name;
 
@@ -2219,7 +2222,7 @@ get_tty_state ()
 #if defined (NEW_TTY_DRIVER)
       ioctl (tty, TIOCGETP, &shell_tty_info);
       ioctl (tty, TIOCGETC, &shell_tchars);
-      ioctl (tty, TIOCGLTC, &shell_ltchars);
+//      ioctl (tty, TIOCGLTC, &shell_ltchars);
 #endif /* NEW_TTY_DRIVER */
 
 #if defined (TERMIO_TTY_DRIVER)

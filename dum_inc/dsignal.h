@@ -23,6 +23,8 @@ Modified by Paul Budnik for GNU BASH
 /* Define stuff **************************************************************/
 
 /* Fake signals ============================================================ */
+#define SIGTSTP 20
+#define SIGTTIN 21
 #define SIGCHLD 23
 #define SIGUSR1 24
 #define SIGUSR2 25

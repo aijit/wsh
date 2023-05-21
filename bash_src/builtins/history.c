@@ -5,7 +5,7 @@
 #include <sys/types.h>
 #include <sys/file.h>
 #include "../filecntl.h"
-#include "../posixstat.h"
+#include "posixstat.h"
 #include "../bashhist.h"
 #include <readline/history.h>
 

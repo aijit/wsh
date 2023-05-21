@@ -172,7 +172,7 @@ typedef __blksize_t blksize_t;
 #define	S_IWUSR	__S_IWRITE	/* Write by owner.  */
 #define	S_IXUSR	__S_IEXEC	/* Execute by owner.  */
 /* Read, write, and execute by owner.  */
-#define	S_IRWXU	(__S_IREAD|__S_IWRITE|__S_IEXEC)
+//#define	S_IRWXU	(__S_IREAD|__S_IWRITE|__S_IEXEC)
 
 #if defined __USE_MISC && defined __USE_BSD
 # define S_IREAD	S_IRUSR

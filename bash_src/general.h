@@ -25,6 +25,7 @@
 
 #include "bashtypes.h"
 #include "chartypes.h"
+#include "command.h"
 
 #if defined (HAVE_SYS_RESOURCE_H) && defined (RLIMTYPE)
 #  if defined (HAVE_SYS_TIME_H)
