@@ -23,14 +23,17 @@ developed by [Jutta Albrecht](https://sourceforge.net/u/bithexe/profile/)
 
     [w64devkit v1.19.0](https://github.com/skeeto/w64devkit/releases/tag/v1.19.0)
     | [CMake v3.25.0](https://github.com/Kitware/CMake/releases/tag/v3.25.0)
+    | [Ninja v1.11.1](https://github.com/ninja-build/ninja/releases/tag/v1.11.1)
     
     GCC 从 2.95.3 开始 no longer implements <varargs.h>
 
-* 编译命令
+* [编译命令](scripts/configure.sh)
 
     `$ cmake -G Ninja -S . -B $BUILD_DIR`
 
     `$ cmake --build $BUILD_DIR --target bash`
+
+    `$ cd $BUILD_DIR && ninja bash`
 
 ### 更新记录
 
